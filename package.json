@@ -1,0 +1,19 @@
+{
+  "name": "soksak-plugin-browser-osr",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "dev": "node build.mjs --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "esbuild": "^0.24.2",
+    "typescript": "~5.9.3",
+    "vitest": "^2.1.8",
+    "jsdom": "^25.0.1"
+  }
+}

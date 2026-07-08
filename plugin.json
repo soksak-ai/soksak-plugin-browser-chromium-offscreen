@@ -1,0 +1,96 @@
+{
+  "spec": "soksak-spec-plugin@0.0.1",
+  "id": "soksak-plugin-browser-osr",
+  "name": {
+    "ko": "브라우저 (OSR)",
+    "en": "Browser (OSR)"
+  },
+  "version": "0.0.1",
+  "repo": "https://github.com/soksak-ai/soksak-plugin-browser-osr.git",
+  "description": {
+    "ko": "Chromium 엔진을 offscreen 모드로 구동해 공유 텍스처를 코어 소유 레이어에 그리는 브라우저. 창 없이 그려 셀 안에 합성되며 입력(마우스/휠/키/한글 IME)은 DOM 셀이 받아 포워딩한다. offscreen 호스팅 모드의 육안 측정용 참조 소비자.",
+    "en": "A browser that drives the Chromium engine in offscreen mode — shared texture painted into a core-owned layer, composited inside the cell. The DOM cell owns input and forwards it (mouse/wheel/key/Korean IME). Reference consumer for eyeballing the offscreen hosting mode."
+  },
+  "entry": "main.js",
+  "permissions": [
+    "ui",
+    "programs",
+    "sidecar"
+  ],
+  "sidecars": [
+    {
+      "name": "browser-chromium",
+      "interface": "soksak-sidecar-browser-spec@1"
+    }
+  ],
+  "configuration": [
+    {
+      "key": "homeUrl",
+      "type": "string",
+      "default": "https://example.com",
+      "title": {
+        "ko": "시작 URL",
+        "en": "Start URL"
+      },
+      "description": {
+        "ko": "새 OSR 브라우저 탭이 처음 여는 주소.",
+        "en": "Address a new OSR browser tab opens to."
+      }
+    }
+  ],
+  "contributes": {
+    "views": [
+      {
+        "id": "content",
+        "title": {
+          "ko": "브라우저 (OSR)",
+          "en": "Browser (OSR)"
+        },
+        "icon": "◎",
+        "placements": [
+          "content"
+        ],
+        "defaultPlacement": "content",
+        "transparent": true
+      }
+    ],
+    "programs": [
+      {
+        "id": "browser-osr",
+        "title": {
+          "ko": "브라우저 (OSR)",
+          "en": "Browser (OSR)"
+        },
+        "path": {
+          "ko": "브라우저",
+          "en": "Browser"
+        },
+        "kind": "view",
+        "view": "content"
+      }
+    ],
+    "nodes": [
+      {
+        "id": "urlbar",
+        "description": {
+          "ko": "주소 입력",
+          "en": "URL input"
+        }
+      },
+      {
+        "id": "go",
+        "description": {
+          "ko": "이동",
+          "en": "Navigate"
+        }
+      },
+      {
+        "id": "osr-cell",
+        "description": {
+          "ko": "OSR 렌더 셀",
+          "en": "OSR render cell"
+        }
+      }
+    ]
+  }
+}
