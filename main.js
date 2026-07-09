@@ -119,10 +119,21 @@ function measureRect(el) {
 function normalizeUrl(raw) {
   const s = raw.trim();
   if (!s) return "about:blank";
-  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(s) || s.startsWith("about:")) return s;
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(s) || s.startsWith("about:") || s.startsWith("data:")) return s;
   if (/^[^\s.]+\.[^\s]+/.test(s)) return `https://${s}`;
   return `https://www.google.com/search?q=${encodeURIComponent(s)}`;
 }
+var views = /* @__PURE__ */ new Map();
+var activeViewId = null;
+var lastMountedViewId = null;
+function resolveEntry(viewId) {
+  if (viewId && views.has(viewId)) return views.get(viewId);
+  if (activeViewId && views.has(activeViewId)) return views.get(activeViewId);
+  if (lastMountedViewId && views.has(lastMountedViewId)) return views.get(lastMountedViewId);
+  const first = views.values().next();
+  return first.done ? null : first.value;
+}
+var pendingUrl = null;
 function activate(ctx) {
   const { app } = ctx;
   let handleP = null;
@@ -144,36 +155,175 @@ function activate(ctx) {
       return null;
     }
   }
+  ctx.subscriptions.push(
+    app.events.on("view.activated", (p) => {
+      const id = p?.viewId;
+      if (typeof id === "string") activeViewId = id;
+    })
+  );
+  if (app.commands) {
+    const reg = (name, spec) => ctx.subscriptions.push(app.commands.register(name, spec));
+    reg("ping", {
+      description: "Load/version check \u2014 returns the plugin id and engine (E2E).",
+      message: (d) => `${d.engine} \uC5D4\uC9C4(offscreen)\uC774 \uC751\uB2F5\uD569\uB2C8\uB2E4.`,
+      handler: () => ({ ok: true, plugin: app.pluginId, engine: "chromium", mode: "offscreen" })
+    });
+    reg("navigate", {
+      description: "Navigate the active (or specified) OSR browser view to a URL.",
+      triggers: { ko: "\uC774\uB3D9 \uC8FC\uC18C \uC5F4\uAE30 navigate osr" },
+      params: { viewId: { type: "string" }, url: { type: "string", description: "URL or search terms", required: true } },
+      message: () => "\uD398\uC774\uC9C0\uB85C \uC774\uB3D9\uD588\uC2B5\uB2C8\uB2E4.",
+      handler: (p) => {
+        const e = resolveEntry(p.viewId);
+        if (!e) return { ok: false, code: "NO_TARGET", message: "no active OSR browser view" };
+        const url = normalizeUrl(String(p.url ?? ""));
+        app.events.progress?.("navigate", url);
+        e.navigate(url);
+        return { ok: true, viewId: e.viewId, url };
+      }
+    });
+    const historyCmd = (name, msg) => reg(name, {
+      description: `Go ${name} in the active (or specified) OSR view's session history.`,
+      params: { viewId: { type: "string" } },
+      message: () => msg,
+      handler: (p) => {
+        const e = resolveEntry(p.viewId);
+        if (!e || e.surfaceId == null) return { ok: false, code: "NO_TARGET", message: "no active OSR browser view" };
+        void send({ type: name, id: e.surfaceId });
+        return { ok: true, viewId: e.viewId };
+      }
+    });
+    historyCmd("back", "\uB4A4\uB85C \uC774\uB3D9\uD588\uC2B5\uB2C8\uB2E4.");
+    historyCmd("forward", "\uC55E\uC73C\uB85C \uC774\uB3D9\uD588\uC2B5\uB2C8\uB2E4.");
+    reg("reload", {
+      description: "Reload the current page of the active (or specified) OSR view.",
+      params: { viewId: { type: "string" }, ignoreCache: { type: "boolean" } },
+      message: () => "\uC0C8\uB85C\uACE0\uCE68\uD588\uC2B5\uB2C8\uB2E4.",
+      handler: (p) => {
+        const e = resolveEntry(p.viewId);
+        if (!e || e.surfaceId == null) return { ok: false, code: "NO_TARGET", message: "no active OSR browser view" };
+        void send({ type: "reload", id: e.surfaceId, ignoreCache: !!p.ignoreCache });
+        return { ok: true, viewId: e.viewId };
+      }
+    });
+    reg("open", {
+      description: "Open a new OSR browser tab (optionally at a URL).",
+      params: { url: { type: "string" } },
+      message: () => "\uC0C8 OSR \uBE0C\uB77C\uC6B0\uC800 \uD0ED\uC744 \uC5F4\uC5C8\uC2B5\uB2C8\uB2E4.",
+      handler: async (p) => {
+        if (p.url) pendingUrl = normalizeUrl(String(p.url));
+        app.events.progress?.("open", pendingUrl ?? "");
+        const out = await app.commands.execute("view.open", { program: "browser-osr" });
+        return { ok: !!out.ok, viewId: out.viewId };
+      }
+    });
+    reg("stats", {
+      description: "OSR view surface ids + engine dbg (framesPresented \u2014 proves the shared-texture present path is alive).",
+      message: (d) => `OSR \uC11C\uD53C\uC2A4 ${d.ids?.length ?? 0}\uAC1C, present ${d.engine?.dbg?.framesPresented ?? "?"}\uD504\uB808\uC784.`,
+      handler: async () => ({
+        ok: true,
+        ids: [...views.values()].map((v) => ({ viewId: v.viewId, surfaceId: v.surfaceId, url: v.getUrl() })),
+        engine: await send({ type: "stats" })
+      })
+    });
+  }
+  const bookmarks = /* @__PURE__ */ new Map();
+  async function loadBookmarks() {
+    if (!app.data) return;
+    const keys = await app.data.kv.keys("bm:");
+    bookmarks.clear();
+    for (const k of keys) {
+      const v = await app.data.kv.get(k);
+      if (v?.url) bookmarks.set(v.url, v);
+    }
+  }
+  if (app.data) {
+    void loadBookmarks();
+    ctx.subscriptions.push(app.data.kv.watch((k) => {
+      if (k == null || k.startsWith("bm:")) void loadBookmarks();
+    }));
+  }
+  const newWindowMode = () => String(app.settings?.get("browserNewWindow") ?? "tab") === "window";
   const provider = {
     mount(container, vctx) {
       const viewId = vctx.viewId;
       if (!viewId) return;
-      container.style.position = "absolute";
-      container.style.inset = "0";
-      container.style.display = "flex";
-      container.style.flexDirection = "column";
-      container.style.background = "transparent";
+      lastMountedViewId = viewId;
+      views.get(viewId)?.teardown();
+      container.replaceChildren();
+      container.style.cssText = "position:absolute;inset:0;display:flex;flex-direction:column;background:transparent";
       const bar = document.createElement("div");
-      bar.style.cssText = "display:flex;gap:6px;padding:6px;flex:0 0 auto;background:var(--color-background-soft,#222)";
+      bar.style.cssText = "display:flex;gap:4px;padding:6px;flex:0 0 auto;align-items:center;background:var(--color-background-soft,#222)";
+      const mkBtn = (node, label, title) => {
+        const b = document.createElement("button");
+        b.setAttribute("data-node", node);
+        b.textContent = label;
+        b.title = title;
+        b.style.cssText = "flex:0 0 auto;width:30px;height:30px;border-radius:6px;border:0;background:var(--color-background,#111);color:var(--color-text,#eee);font:15px system-ui;cursor:pointer";
+        return b;
+      };
+      const backBtn = mkBtn("back", "\u2039", "\uB4A4\uB85C");
+      const fwdBtn = mkBtn("forward", "\u203A", "\uC55E\uC73C\uB85C");
+      const reloadBtn = mkBtn("reload", "\u27F3", "\uC0C8\uB85C\uACE0\uCE68");
       const url = document.createElement("input");
       url.setAttribute("data-node", "urlbar");
       url.type = "text";
       url.placeholder = "URL \uB610\uB294 \uAC80\uC0C9\uC5B4";
-      url.style.cssText = "flex:1;padding:6px 10px;border-radius:6px;border:1px solid var(--color-border,#444);background:var(--color-background,#111);color:var(--color-text,#eee);font:13px system-ui";
-      const go = document.createElement("button");
-      go.setAttribute("data-node", "go");
-      go.textContent = "\uC774\uB3D9";
-      go.style.cssText = "padding:6px 12px;border-radius:6px;border:0;background:var(--color-accent,#3b82f6);color:#fff;font:13px system-ui;cursor:pointer";
-      bar.append(url, go);
+      url.style.cssText = "flex:1 1 auto;padding:6px 10px;border-radius:6px;border:1px solid var(--color-border,#444);background:var(--color-background,#111);color:var(--color-text,#eee);font:13px system-ui";
+      const go = mkBtn("go", "\u21B5", "\uC774\uB3D9");
+      go.style.background = "var(--color-accent,#3b82f6)";
+      go.style.color = "#fff";
+      const star = mkBtn("bookmark", "\u2606", "\uBD81\uB9C8\uD06C");
+      bar.append(backBtn, fwdBtn, reloadBtn, url, go, star);
       const cell = document.createElement("div");
       cell.setAttribute("data-node", "osr-cell");
       cell.style.cssText = "flex:1 1 auto;position:relative;overflow:hidden;background:transparent";
       container.append(bar, cell);
-      const homeUrl = String(app.settings?.get("homeUrl") ?? "https://example.com");
-      url.value = homeUrl;
       let surfaceId = null;
+      let currentUrl = "about:blank";
       let stopInput = null;
       let stopFollow = null;
+      let disposed = false;
+      const teardown = () => {
+        if (disposed) return;
+        disposed = true;
+        if (views.get(viewId) === entry) views.delete(viewId);
+        if (activeViewId === viewId) activeViewId = null;
+        stopInput?.();
+        stopFollow?.();
+        if (surfaceId != null) void send({ type: "close", id: surfaceId });
+        surfaceId = null;
+      };
+      const entry = {
+        viewId,
+        surfaceId: null,
+        getUrl: () => currentUrl,
+        navigate: (u) => {
+          url.value = u;
+          currentUrl = u;
+          if (surfaceId != null) void send({ type: "load", id: surfaceId, url: u });
+        },
+        teardown
+      };
+      views.set(viewId, entry);
+      function setUrlBar(u) {
+        currentUrl = u;
+        url.value = u;
+        star.textContent = bookmarks.has(u) ? "\u2605" : "\u2606";
+        if (app.data && u && u !== "about:blank") void app.data.kv.set(`vurl:${viewId}`, u);
+      }
+      async function startUrl() {
+        if (pendingUrl) {
+          const u = pendingUrl;
+          pendingUrl = null;
+          return normalizeUrl(u);
+        }
+        if (app.data) {
+          const saved = await app.data.kv.get(`vurl:${viewId}`);
+          if (saved) return normalizeUrl(saved);
+        }
+        return normalizeUrl(String(app.settings?.get("homeUrl") ?? "https://example.com"));
+      }
       function follow(id) {
         let lastKey = "";
         let raf = 0;
@@ -200,45 +350,80 @@ function activate(ctx) {
         const ro = new ResizeObserver(arm);
         ro.observe(cell);
         window.addEventListener("resize", arm);
+        const io = new IntersectionObserver((entries) => {
+          const visible = entries.some((e) => e.isIntersecting);
+          void send({ type: "hidden", id, hidden: !visible });
+          if (visible) {
+            lastKey = "";
+            arm();
+          }
+        });
+        io.observe(cell);
         arm();
         return () => {
           ro.disconnect();
+          io.disconnect();
           window.removeEventListener("resize", arm);
           if (raf) cancelAnimationFrame(raf);
         };
       }
-      function navigate() {
-        const target = normalizeUrl(url.value);
-        url.value = target;
-        if (surfaceId != null) void send({ type: "load", id: surfaceId, url: target });
-      }
-      go.addEventListener("click", navigate);
+      const doNav = () => entry.navigate(normalizeUrl(url.value));
+      go.addEventListener("click", doNav);
       url.addEventListener("keydown", (e) => {
-        if (e.key === "Enter") navigate();
+        if (e.key === "Enter" && !e.isComposing) {
+          doNav();
+          url.blur();
+        }
+      });
+      backBtn.addEventListener("click", () => {
+        if (surfaceId != null) void send({ type: "back", id: surfaceId });
+      });
+      fwdBtn.addEventListener("click", () => {
+        if (surfaceId != null) void send({ type: "forward", id: surfaceId });
+      });
+      reloadBtn.addEventListener("click", () => {
+        if (surfaceId != null) void send({ type: "reload", id: surfaceId });
+      });
+      star.addEventListener("click", () => {
+        if (!app.data || !currentUrl || currentUrl === "about:blank") return;
+        if (bookmarks.has(currentUrl)) {
+          bookmarks.delete(currentUrl);
+          void app.data.kv.delete(`bm:${currentUrl}`);
+        } else {
+          const b = { url: currentUrl, title: (() => {
+            try {
+              return new URL(currentUrl).host;
+            } catch {
+              return currentUrl;
+            }
+          })() };
+          bookmarks.set(currentUrl, b);
+          void app.data.kv.set(`bm:${currentUrl}`, b);
+        }
+        star.textContent = bookmarks.has(currentUrl) ? "\u2605" : "\u2606";
       });
       void (async () => {
+        const first = await startUrl();
         const r = measureRect(cell);
-        const out = await send({
-          type: "create",
-          mode: "offscreen",
-          scale: window.devicePixelRatio || 1,
-          x: r.x,
-          y: r.y,
-          w: r.w,
-          h: r.h,
-          url: normalizeUrl(homeUrl)
-        });
+        const out = await send({ type: "create", mode: "offscreen", scale: window.devicePixelRatio || 1, x: r.x, y: r.y, w: r.w, h: r.h, url: first });
         const id = out && typeof out.id === "number" ? out.id : null;
         if (id == null) {
           cell.textContent = "\uC5D4\uC9C4 \uC11C\uD53C\uC2A4 \uC0DD\uC131 \uC2E4\uD328";
           return;
         }
+        if (disposed || views.get(viewId) !== entry) {
+          void send({ type: "close", id });
+          return;
+        }
         surfaceId = id;
+        entry.surfaceId = id;
+        setUrlBar(first);
+        void send({ type: "popup-mode", asWindow: newWindowMode() });
         stopFollow = follow(id);
         stopInput = forwardInput(cell, (m) => void send({ ...m, id }));
         const h = await engine();
         h.on("nav", (p) => {
-          if (p.id === id && typeof p.url === "string") url.value = p.url;
+          if (p.id === id && typeof p.url === "string") setUrlBar(p.url);
         });
         h.on("title", (p) => {
           if (p.id === id && typeof p.title === "string") vctx.setTitle?.(p.title);
@@ -246,12 +431,18 @@ function activate(ctx) {
         h.on("cursor", (p) => {
           if (p.id === id) cell.style.cursor = String(p.type ?? "default");
         });
+        h.on("popup-url", (p) => {
+          if (p.id !== id || typeof p.url !== "string") return;
+          pendingUrl = p.url;
+          void app.commands?.execute("view.open", { program: "browser-osr" }).then((o) => {
+            if (!o?.ok) {
+              pendingUrl = null;
+              entry.navigate(normalizeUrl(p.url));
+            }
+          });
+        });
       })();
-      container.__osrCleanup = () => {
-        stopInput?.();
-        stopFollow?.();
-        if (surfaceId != null) void send({ type: "close", id: surfaceId });
-      };
+      container.__osrCleanup = teardown;
     },
     unmount(container) {
       const c = container;
@@ -263,5 +454,6 @@ function activate(ctx) {
 }
 var plugin_entry_default = { activate };
 export {
+  activate,
   plugin_entry_default as default
 };
