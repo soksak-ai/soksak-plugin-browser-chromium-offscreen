@@ -159,6 +159,29 @@ export function activate(ctx: PluginContext): void {
         return { ok: true, viewId: e.viewId };
       },
     });
+    reg("stop", {
+      description: "Stop loading the active (or specified) OSR view.",
+      params: { viewId: { type: "string" } },
+      message: () => "로딩을 정지했습니다.",
+      handler: (p) => {
+        const e = resolveEntry(p.viewId as string | undefined);
+        if (!e || e.surfaceId == null) return { ok: false, code: "NO_TARGET", message: "no active OSR browser view" };
+        void send({ type: "stop", id: e.surfaceId });
+        return { ok: true, viewId: e.viewId };
+      },
+    });
+    reg("home", {
+      description: "Navigate the active (or specified) OSR view to the configured home URL.",
+      params: { viewId: { type: "string" } },
+      message: () => "홈으로 이동했습니다.",
+      handler: (p) => {
+        const e = resolveEntry(p.viewId as string | undefined);
+        if (!e) return { ok: false, code: "NO_TARGET", message: "no active OSR browser view" };
+        const url = normalizeUrl(String(app.settings?.get("homeUrl") ?? "https://example.com"));
+        e.navigate(url);
+        return { ok: true, viewId: e.viewId, url };
+      },
+    });
     reg("open", {
       description: "Open a new OSR browser tab (optionally at a URL).",
       params: { url: { type: "string" } },
@@ -224,9 +247,11 @@ export function activate(ctx: PluginContext): void {
         b.style.cssText = "flex:0 0 auto;width:30px;height:30px;border-radius:6px;border:0;background:var(--color-background,#111);color:var(--color-text,#eee);font:15px system-ui;cursor:pointer";
         return b;
       };
+      bar.style.position = "relative"; // 진행 바 앵커
       const backBtn = mkBtn("back", "‹", "뒤로");
       const fwdBtn = mkBtn("forward", "›", "앞으로");
-      const reloadBtn = mkBtn("reload", "⟳", "새로고침");
+      const reloadBtn = mkBtn("reload", "⟳", "새로고침"); // 로딩 중 ✕(정지)로 토글
+      const homeBtn = mkBtn("home", "⌂", "홈");
       const url = document.createElement("input");
       url.setAttribute("data-node", "urlbar");
       url.type = "text";
@@ -236,7 +261,12 @@ export function activate(ctx: PluginContext): void {
       go.style.background = "var(--color-accent,#3b82f6)";
       go.style.color = "#fff";
       const star = mkBtn("bookmark", "☆", "북마크");
-      bar.append(backBtn, fwdBtn, reloadBtn, url, go, star);
+      bar.append(backBtn, fwdBtn, reloadBtn, homeBtn, url, go, star);
+      // 로딩 진행 바(불확정) — 툴바 하단. 엔진 loading 이벤트로 표시/숨김.
+      const progress = document.createElement("div");
+      progress.setAttribute("data-node", "progress");
+      progress.style.cssText = "position:absolute;left:0;bottom:0;height:2px;width:0;background:var(--color-accent,#3b82f6);transition:width .25s ease-out;opacity:0";
+      bar.appendChild(progress);
 
       // ── 투명 홀 셀 ──
       const cell = document.createElement("div");
@@ -249,6 +279,18 @@ export function activate(ctx: PluginContext): void {
       let stopInput: (() => void) | null = null;
       let stopFollow: (() => void) | null = null;
       let disposed = false;
+      let loading = false;
+      let canBack = false;
+      let canForward = false;
+      // 엔진 loading 이벤트가 갱신하는 툴바 상태 — reload↔stop 토글, 진행 바, 뒤로/앞으로 활성.
+      function applyNavState(): void {
+        reloadBtn.textContent = loading ? "✕" : "⟳";
+        reloadBtn.title = loading ? "정지" : "새로고침";
+        progress.style.opacity = loading ? "1" : "0";
+        progress.style.width = loading ? "70%" : "100%"; // 로딩 중 70%, 완료 시 꽉 채우고 페이드아웃
+        backBtn.style.opacity = canBack ? "1" : "0.35";
+        fwdBtn.style.opacity = canForward ? "1" : "0.35";
+      }
 
       const teardown = (): void => {
         if (disposed) return;
@@ -322,11 +364,14 @@ export function activate(ctx: PluginContext): void {
 
       // ── 툴바 배선 ──
       const doNav = (): void => entry.navigate(normalizeUrl(url.value));
+      const homeUrl = (): string => normalizeUrl(String(app.settings?.get("homeUrl") ?? "https://example.com"));
       go.addEventListener("click", doNav);
       url.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.isComposing) { doNav(); url.blur(); } });
-      backBtn.addEventListener("click", () => { if (surfaceId != null) void send({ type: "back", id: surfaceId }); });
-      fwdBtn.addEventListener("click", () => { if (surfaceId != null) void send({ type: "forward", id: surfaceId }); });
-      reloadBtn.addEventListener("click", () => { if (surfaceId != null) void send({ type: "reload", id: surfaceId }); });
+      backBtn.addEventListener("click", () => { if (canBack && surfaceId != null) void send({ type: "back", id: surfaceId }); });
+      fwdBtn.addEventListener("click", () => { if (canForward && surfaceId != null) void send({ type: "forward", id: surfaceId }); });
+      // reload 버튼은 로딩 중이면 정지(stop), 아니면 새로고침 — 표준 브라우저 토글.
+      reloadBtn.addEventListener("click", () => { if (surfaceId != null) void send({ type: loading ? "stop" : "reload", id: surfaceId }); });
+      homeBtn.addEventListener("click", () => entry.navigate(homeUrl()));
       star.addEventListener("click", () => {
         if (!app.data || !currentUrl || currentUrl === "about:blank") return;
         // 낙관적 즉시 반영 — 공유 map·글리프를 지금 갱신하고 kv 는 비동기로 뒤따른다. kv.watch 의
@@ -357,6 +402,13 @@ export function activate(ctx: PluginContext): void {
         h.on("nav", (p) => { if (p.id === id && typeof p.url === "string") setUrlBar(p.url); });
         h.on("title", (p) => { if (p.id === id && typeof p.title === "string") vctx.setTitle?.(p.title); });
         h.on("cursor", (p) => { if (p.id === id) cell.style.cursor = String(p.type ?? "default"); });
+        h.on("loading", (p) => {
+          if (p.id !== id) return;
+          loading = !!p.loading;
+          canBack = !!p.canBack;
+          canForward = !!p.canForward;
+          applyNavState();
+        });
         // 새 링크(target=_blank/window.open) — tab 모드에서 엔진이 popup-url 로 배달. 새 OSR 탭으로 연다.
         h.on("popup-url", (p) => {
           if (p.id !== id || typeof p.url !== "string") return;

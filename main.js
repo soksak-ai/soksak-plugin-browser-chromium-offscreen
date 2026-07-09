@@ -206,6 +206,29 @@ function activate(ctx) {
         return { ok: true, viewId: e.viewId };
       }
     });
+    reg("stop", {
+      description: "Stop loading the active (or specified) OSR view.",
+      params: { viewId: { type: "string" } },
+      message: () => "\uB85C\uB529\uC744 \uC815\uC9C0\uD588\uC2B5\uB2C8\uB2E4.",
+      handler: (p) => {
+        const e = resolveEntry(p.viewId);
+        if (!e || e.surfaceId == null) return { ok: false, code: "NO_TARGET", message: "no active OSR browser view" };
+        void send({ type: "stop", id: e.surfaceId });
+        return { ok: true, viewId: e.viewId };
+      }
+    });
+    reg("home", {
+      description: "Navigate the active (or specified) OSR view to the configured home URL.",
+      params: { viewId: { type: "string" } },
+      message: () => "\uD648\uC73C\uB85C \uC774\uB3D9\uD588\uC2B5\uB2C8\uB2E4.",
+      handler: (p) => {
+        const e = resolveEntry(p.viewId);
+        if (!e) return { ok: false, code: "NO_TARGET", message: "no active OSR browser view" };
+        const url = normalizeUrl(String(app.settings?.get("homeUrl") ?? "https://example.com"));
+        e.navigate(url);
+        return { ok: true, viewId: e.viewId, url };
+      }
+    });
     reg("open", {
       description: "Open a new OSR browser tab (optionally at a URL).",
       params: { url: { type: "string" } },
@@ -262,9 +285,11 @@ function activate(ctx) {
         b.style.cssText = "flex:0 0 auto;width:30px;height:30px;border-radius:6px;border:0;background:var(--color-background,#111);color:var(--color-text,#eee);font:15px system-ui;cursor:pointer";
         return b;
       };
+      bar.style.position = "relative";
       const backBtn = mkBtn("back", "\u2039", "\uB4A4\uB85C");
       const fwdBtn = mkBtn("forward", "\u203A", "\uC55E\uC73C\uB85C");
       const reloadBtn = mkBtn("reload", "\u27F3", "\uC0C8\uB85C\uACE0\uCE68");
+      const homeBtn = mkBtn("home", "\u2302", "\uD648");
       const url = document.createElement("input");
       url.setAttribute("data-node", "urlbar");
       url.type = "text";
@@ -274,7 +299,11 @@ function activate(ctx) {
       go.style.background = "var(--color-accent,#3b82f6)";
       go.style.color = "#fff";
       const star = mkBtn("bookmark", "\u2606", "\uBD81\uB9C8\uD06C");
-      bar.append(backBtn, fwdBtn, reloadBtn, url, go, star);
+      bar.append(backBtn, fwdBtn, reloadBtn, homeBtn, url, go, star);
+      const progress = document.createElement("div");
+      progress.setAttribute("data-node", "progress");
+      progress.style.cssText = "position:absolute;left:0;bottom:0;height:2px;width:0;background:var(--color-accent,#3b82f6);transition:width .25s ease-out;opacity:0";
+      bar.appendChild(progress);
       const cell = document.createElement("div");
       cell.setAttribute("data-node", "osr-cell");
       cell.style.cssText = "flex:1 1 auto;position:relative;overflow:hidden;background:transparent";
@@ -284,6 +313,17 @@ function activate(ctx) {
       let stopInput = null;
       let stopFollow = null;
       let disposed = false;
+      let loading = false;
+      let canBack = false;
+      let canForward = false;
+      function applyNavState() {
+        reloadBtn.textContent = loading ? "\u2715" : "\u27F3";
+        reloadBtn.title = loading ? "\uC815\uC9C0" : "\uC0C8\uB85C\uACE0\uCE68";
+        progress.style.opacity = loading ? "1" : "0";
+        progress.style.width = loading ? "70%" : "100%";
+        backBtn.style.opacity = canBack ? "1" : "0.35";
+        fwdBtn.style.opacity = canForward ? "1" : "0.35";
+      }
       const teardown = () => {
         if (disposed) return;
         disposed = true;
@@ -368,6 +408,7 @@ function activate(ctx) {
         };
       }
       const doNav = () => entry.navigate(normalizeUrl(url.value));
+      const homeUrl = () => normalizeUrl(String(app.settings?.get("homeUrl") ?? "https://example.com"));
       go.addEventListener("click", doNav);
       url.addEventListener("keydown", (e) => {
         if (e.key === "Enter" && !e.isComposing) {
@@ -376,14 +417,15 @@ function activate(ctx) {
         }
       });
       backBtn.addEventListener("click", () => {
-        if (surfaceId != null) void send({ type: "back", id: surfaceId });
+        if (canBack && surfaceId != null) void send({ type: "back", id: surfaceId });
       });
       fwdBtn.addEventListener("click", () => {
-        if (surfaceId != null) void send({ type: "forward", id: surfaceId });
+        if (canForward && surfaceId != null) void send({ type: "forward", id: surfaceId });
       });
       reloadBtn.addEventListener("click", () => {
-        if (surfaceId != null) void send({ type: "reload", id: surfaceId });
+        if (surfaceId != null) void send({ type: loading ? "stop" : "reload", id: surfaceId });
       });
+      homeBtn.addEventListener("click", () => entry.navigate(homeUrl()));
       star.addEventListener("click", () => {
         if (!app.data || !currentUrl || currentUrl === "about:blank") return;
         if (bookmarks.has(currentUrl)) {
@@ -430,6 +472,13 @@ function activate(ctx) {
         });
         h.on("cursor", (p) => {
           if (p.id === id) cell.style.cursor = String(p.type ?? "default");
+        });
+        h.on("loading", (p) => {
+          if (p.id !== id) return;
+          loading = !!p.loading;
+          canBack = !!p.canBack;
+          canForward = !!p.canForward;
+          applyNavState();
         });
         h.on("popup-url", (p) => {
           if (p.id !== id || typeof p.url !== "string") return;

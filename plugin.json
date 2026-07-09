@@ -135,6 +135,20 @@
         }
       },
       {
+        "name": "stop",
+        "title": {
+          "ko": "정지",
+          "en": "Stop"
+        }
+      },
+      {
+        "name": "home",
+        "title": {
+          "ko": "홈",
+          "en": "Home"
+        }
+      },
+      {
         "name": "open",
         "title": {
           "ko": "새 탭 열기",
@@ -167,8 +181,15 @@
       {
         "id": "reload",
         "description": {
-          "ko": "새로고침",
-          "en": "Reload"
+          "ko": "새로고침/정지 토글",
+          "en": "Reload/stop toggle"
+        }
+      },
+      {
+        "id": "home",
+        "description": {
+          "ko": "홈",
+          "en": "Home"
         }
       },
       {
@@ -183,6 +204,13 @@
         "description": {
           "ko": "이동",
           "en": "Navigate"
+        }
+      },
+      {
+        "id": "progress",
+        "description": {
+          "ko": "로딩 진행 바",
+          "en": "Loading progress bar"
         }
       },
       {
