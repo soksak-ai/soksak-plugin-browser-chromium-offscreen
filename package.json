@@ -1,5 +1,5 @@
 {
-  "name": "soksak-plugin-browser-osr",
+  "name": "soksak-plugin-browser-chromium-offscreen",
   "version": "0.0.1",
   "private": true,
   "type": "module",

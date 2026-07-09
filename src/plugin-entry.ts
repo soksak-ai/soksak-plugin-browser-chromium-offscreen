@@ -1,4 +1,4 @@
-// soksak-plugin-browser-osr — Chromium 엔진을 offscreen 모드(SIDECARS.md §8)로 구동하는 브라우저.
+// soksak-plugin-browser-chromium-offscreen — Chromium 엔진을 offscreen 모드(SIDECARS.md §8)로 구동하는 브라우저.
 // windowed browser-chromium 과 같은 엔진(browser-chromium 사이드카)·같은 프로토콜을 쓰되
 // mode:"offscreen" 으로 연다: 엔진이 창 없이 그려 공유 텍스처를 코어 소유 레이어에 present 하고,
 // 이 뷰의 DOM 셀이 모든 입력을 받아 프로토콜(mouse/wheel/key/ime)로 포워딩한다. 코어는 메시지 의미를
@@ -99,7 +99,7 @@ export function activate(ctx: PluginContext): void {
     try {
       return await (await engine()).send(msg);
     } catch (e) {
-      console.warn("[browser-osr] sidecar send 실패:", e);
+      console.warn("[chromium-offscreen] sidecar send 실패:", e);
       return null;
     }
   }
@@ -121,13 +121,13 @@ export function activate(ctx: PluginContext): void {
       handler: () => ({ ok: true, plugin: app.pluginId, engine: "chromium", mode: "offscreen" }),
     });
     reg("navigate", {
-      description: "Navigate the active (or specified) OSR browser view to a URL.",
-      triggers: { ko: "이동 주소 열기 navigate osr" },
+      description: "Navigate the active (or specified) offscreen browser view to a URL.",
+      triggers: { ko: "이동 주소 열기 navigate chromium offscreen" },
       params: { viewId: { type: "string" }, url: { type: "string", description: "URL or search terms", required: true } },
       message: () => "페이지로 이동했습니다.",
       handler: (p) => {
         const e = resolveEntry(p.viewId as string | undefined);
-        if (!e) return { ok: false, code: "NO_TARGET", message: "no active OSR browser view" };
+        if (!e) return { ok: false, code: "NO_TARGET", message: "no active offscreen browser view" };
         const url = normalizeUrl(String(p.url ?? ""));
         app.events.progress?.("navigate", url);
         e.navigate(url);
@@ -136,12 +136,12 @@ export function activate(ctx: PluginContext): void {
     });
     const historyCmd = (name: string, msg: string) =>
       reg(name, {
-        description: `Go ${name} in the active (or specified) OSR view's session history.`,
+        description: `Go ${name} in the active (or specified) offscreen view's session history.`,
         params: { viewId: { type: "string" } },
         message: () => msg,
         handler: (p) => {
           const e = resolveEntry(p.viewId as string | undefined);
-          if (!e || e.surfaceId == null) return { ok: false, code: "NO_TARGET", message: "no active OSR browser view" };
+          if (!e || e.surfaceId == null) return { ok: false, code: "NO_TARGET", message: "no active offscreen browser view" };
           void send({ type: name, id: e.surfaceId });
           return { ok: true, viewId: e.viewId };
         },
@@ -149,53 +149,53 @@ export function activate(ctx: PluginContext): void {
     historyCmd("back", "뒤로 이동했습니다.");
     historyCmd("forward", "앞으로 이동했습니다.");
     reg("reload", {
-      description: "Reload the current page of the active (or specified) OSR view.",
+      description: "Reload the current page of the active (or specified) offscreen view.",
       params: { viewId: { type: "string" }, ignoreCache: { type: "boolean" } },
       message: () => "새로고침했습니다.",
       handler: (p) => {
         const e = resolveEntry(p.viewId as string | undefined);
-        if (!e || e.surfaceId == null) return { ok: false, code: "NO_TARGET", message: "no active OSR browser view" };
+        if (!e || e.surfaceId == null) return { ok: false, code: "NO_TARGET", message: "no active offscreen browser view" };
         void send({ type: "reload", id: e.surfaceId, ignoreCache: !!p.ignoreCache });
         return { ok: true, viewId: e.viewId };
       },
     });
     reg("stop", {
-      description: "Stop loading the active (or specified) OSR view.",
+      description: "Stop loading the active (or specified) offscreen view.",
       params: { viewId: { type: "string" } },
       message: () => "로딩을 정지했습니다.",
       handler: (p) => {
         const e = resolveEntry(p.viewId as string | undefined);
-        if (!e || e.surfaceId == null) return { ok: false, code: "NO_TARGET", message: "no active OSR browser view" };
+        if (!e || e.surfaceId == null) return { ok: false, code: "NO_TARGET", message: "no active offscreen browser view" };
         void send({ type: "stop", id: e.surfaceId });
         return { ok: true, viewId: e.viewId };
       },
     });
     reg("home", {
-      description: "Navigate the active (or specified) OSR view to the configured home URL.",
+      description: "Navigate the active (or specified) offscreen view to the configured home URL.",
       params: { viewId: { type: "string" } },
       message: () => "홈으로 이동했습니다.",
       handler: (p) => {
         const e = resolveEntry(p.viewId as string | undefined);
-        if (!e) return { ok: false, code: "NO_TARGET", message: "no active OSR browser view" };
+        if (!e) return { ok: false, code: "NO_TARGET", message: "no active offscreen browser view" };
         const url = normalizeUrl(String(app.settings?.get("homeUrl") ?? "https://example.com"));
         e.navigate(url);
         return { ok: true, viewId: e.viewId, url };
       },
     });
     reg("open", {
-      description: "Open a new OSR browser tab (optionally at a URL).",
+      description: "Open a new offscreen browser tab (optionally at a URL).",
       params: { url: { type: "string" } },
-      message: () => "새 OSR 브라우저 탭을 열었습니다.",
+      message: () => "새 offscreen 브라우저 탭을 열었습니다.",
       handler: async (p) => {
         if (p.url) pendingUrl = normalizeUrl(String(p.url));
         app.events.progress?.("open", pendingUrl ?? "");
-        const out = await app.commands!.execute("view.open", { program: "browser-osr" });
+        const out = await app.commands!.execute("view.open", { program: "browser-chromium-offscreen" });
         return { ok: !!out.ok, viewId: (out as { viewId?: string }).viewId };
       },
     });
     reg("stats", {
-      description: "OSR view surface ids + engine dbg (framesPresented — proves the shared-texture present path is alive).",
-      message: (d) => `OSR 서피스 ${(d.ids as unknown[] | undefined)?.length ?? 0}개, present ${(d.engine as { dbg?: { framesPresented?: number } } | undefined)?.dbg?.framesPresented ?? "?"}프레임.`,
+      description: "offscreen view surface ids + engine dbg (framesPresented — proves the shared-texture present path is alive).",
+      message: (d) => `offscreen 서피스 ${(d.ids as unknown[] | undefined)?.length ?? 0}개, present ${(d.engine as { dbg?: { framesPresented?: number } } | undefined)?.dbg?.framesPresented ?? "?"}프레임.`,
       handler: async () => ({
         ok: true,
         ids: [...views.values()].map((v) => ({ viewId: v.viewId, surfaceId: v.surfaceId, url: v.getUrl() })),
@@ -270,7 +270,7 @@ export function activate(ctx: PluginContext): void {
 
       // ── 투명 홀 셀 ──
       const cell = document.createElement("div");
-      cell.setAttribute("data-node", "osr-cell");
+      cell.setAttribute("data-node", "offscreen-cell");
       cell.style.cssText = "flex:1 1 auto;position:relative;overflow:hidden;background:transparent";
       container.append(bar, cell);
 
@@ -409,22 +409,22 @@ export function activate(ctx: PluginContext): void {
           canForward = !!p.canForward;
           applyNavState();
         });
-        // 새 링크(target=_blank/window.open) — tab 모드에서 엔진이 popup-url 로 배달. 새 OSR 탭으로 연다.
+        // 새 링크(target=_blank/window.open) — tab 모드에서 엔진이 popup-url 로 배달. 새 offscreen 탭으로 연다.
         h.on("popup-url", (p) => {
           if (p.id !== id || typeof p.url !== "string") return;
           pendingUrl = p.url;
-          void app.commands?.execute("view.open", { program: "browser-osr" }).then((o) => {
+          void app.commands?.execute("view.open", { program: "browser-chromium-offscreen" }).then((o) => {
             if (!o?.ok) { pendingUrl = null; entry.navigate(normalizeUrl(p.url as string)); } // 실패 시 현재 뷰에서 이동(URL 유실 방지)
           });
         });
       })();
 
-      (container as unknown as { __osrCleanup?: () => void }).__osrCleanup = teardown;
+      (container as unknown as { __offscreenCleanup?: () => void }).__offscreenCleanup = teardown;
     },
     unmount(container) {
-      const c = container as unknown as { __osrCleanup?: () => void };
-      c.__osrCleanup?.();
-      c.__osrCleanup = undefined;
+      const c = container as unknown as { __offscreenCleanup?: () => void };
+      c.__offscreenCleanup?.();
+      c.__offscreenCleanup = undefined;
     },
   };
 

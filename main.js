@@ -151,7 +151,7 @@ function activate(ctx) {
     try {
       return await (await engine()).send(msg);
     } catch (e) {
-      console.warn("[browser-osr] sidecar send \uC2E4\uD328:", e);
+      console.warn("[chromium-offscreen] sidecar send \uC2E4\uD328:", e);
       return null;
     }
   }
@@ -169,13 +169,13 @@ function activate(ctx) {
       handler: () => ({ ok: true, plugin: app.pluginId, engine: "chromium", mode: "offscreen" })
     });
     reg("navigate", {
-      description: "Navigate the active (or specified) OSR browser view to a URL.",
-      triggers: { ko: "\uC774\uB3D9 \uC8FC\uC18C \uC5F4\uAE30 navigate osr" },
+      description: "Navigate the active (or specified) offscreen browser view to a URL.",
+      triggers: { ko: "\uC774\uB3D9 \uC8FC\uC18C \uC5F4\uAE30 navigate chromium offscreen" },
       params: { viewId: { type: "string" }, url: { type: "string", description: "URL or search terms", required: true } },
       message: () => "\uD398\uC774\uC9C0\uB85C \uC774\uB3D9\uD588\uC2B5\uB2C8\uB2E4.",
       handler: (p) => {
         const e = resolveEntry(p.viewId);
-        if (!e) return { ok: false, code: "NO_TARGET", message: "no active OSR browser view" };
+        if (!e) return { ok: false, code: "NO_TARGET", message: "no active offscreen browser view" };
         const url = normalizeUrl(String(p.url ?? ""));
         app.events.progress?.("navigate", url);
         e.navigate(url);
@@ -183,12 +183,12 @@ function activate(ctx) {
       }
     });
     const historyCmd = (name, msg) => reg(name, {
-      description: `Go ${name} in the active (or specified) OSR view's session history.`,
+      description: `Go ${name} in the active (or specified) offscreen view's session history.`,
       params: { viewId: { type: "string" } },
       message: () => msg,
       handler: (p) => {
         const e = resolveEntry(p.viewId);
-        if (!e || e.surfaceId == null) return { ok: false, code: "NO_TARGET", message: "no active OSR browser view" };
+        if (!e || e.surfaceId == null) return { ok: false, code: "NO_TARGET", message: "no active offscreen browser view" };
         void send({ type: name, id: e.surfaceId });
         return { ok: true, viewId: e.viewId };
       }
@@ -196,53 +196,53 @@ function activate(ctx) {
     historyCmd("back", "\uB4A4\uB85C \uC774\uB3D9\uD588\uC2B5\uB2C8\uB2E4.");
     historyCmd("forward", "\uC55E\uC73C\uB85C \uC774\uB3D9\uD588\uC2B5\uB2C8\uB2E4.");
     reg("reload", {
-      description: "Reload the current page of the active (or specified) OSR view.",
+      description: "Reload the current page of the active (or specified) offscreen view.",
       params: { viewId: { type: "string" }, ignoreCache: { type: "boolean" } },
       message: () => "\uC0C8\uB85C\uACE0\uCE68\uD588\uC2B5\uB2C8\uB2E4.",
       handler: (p) => {
         const e = resolveEntry(p.viewId);
-        if (!e || e.surfaceId == null) return { ok: false, code: "NO_TARGET", message: "no active OSR browser view" };
+        if (!e || e.surfaceId == null) return { ok: false, code: "NO_TARGET", message: "no active offscreen browser view" };
         void send({ type: "reload", id: e.surfaceId, ignoreCache: !!p.ignoreCache });
         return { ok: true, viewId: e.viewId };
       }
     });
     reg("stop", {
-      description: "Stop loading the active (or specified) OSR view.",
+      description: "Stop loading the active (or specified) offscreen view.",
       params: { viewId: { type: "string" } },
       message: () => "\uB85C\uB529\uC744 \uC815\uC9C0\uD588\uC2B5\uB2C8\uB2E4.",
       handler: (p) => {
         const e = resolveEntry(p.viewId);
-        if (!e || e.surfaceId == null) return { ok: false, code: "NO_TARGET", message: "no active OSR browser view" };
+        if (!e || e.surfaceId == null) return { ok: false, code: "NO_TARGET", message: "no active offscreen browser view" };
         void send({ type: "stop", id: e.surfaceId });
         return { ok: true, viewId: e.viewId };
       }
     });
     reg("home", {
-      description: "Navigate the active (or specified) OSR view to the configured home URL.",
+      description: "Navigate the active (or specified) offscreen view to the configured home URL.",
       params: { viewId: { type: "string" } },
       message: () => "\uD648\uC73C\uB85C \uC774\uB3D9\uD588\uC2B5\uB2C8\uB2E4.",
       handler: (p) => {
         const e = resolveEntry(p.viewId);
-        if (!e) return { ok: false, code: "NO_TARGET", message: "no active OSR browser view" };
+        if (!e) return { ok: false, code: "NO_TARGET", message: "no active offscreen browser view" };
         const url = normalizeUrl(String(app.settings?.get("homeUrl") ?? "https://example.com"));
         e.navigate(url);
         return { ok: true, viewId: e.viewId, url };
       }
     });
     reg("open", {
-      description: "Open a new OSR browser tab (optionally at a URL).",
+      description: "Open a new offscreen browser tab (optionally at a URL).",
       params: { url: { type: "string" } },
-      message: () => "\uC0C8 OSR \uBE0C\uB77C\uC6B0\uC800 \uD0ED\uC744 \uC5F4\uC5C8\uC2B5\uB2C8\uB2E4.",
+      message: () => "\uC0C8 offscreen \uBE0C\uB77C\uC6B0\uC800 \uD0ED\uC744 \uC5F4\uC5C8\uC2B5\uB2C8\uB2E4.",
       handler: async (p) => {
         if (p.url) pendingUrl = normalizeUrl(String(p.url));
         app.events.progress?.("open", pendingUrl ?? "");
-        const out = await app.commands.execute("view.open", { program: "browser-osr" });
+        const out = await app.commands.execute("view.open", { program: "browser-chromium-offscreen" });
         return { ok: !!out.ok, viewId: out.viewId };
       }
     });
     reg("stats", {
-      description: "OSR view surface ids + engine dbg (framesPresented \u2014 proves the shared-texture present path is alive).",
-      message: (d) => `OSR \uC11C\uD53C\uC2A4 ${d.ids?.length ?? 0}\uAC1C, present ${d.engine?.dbg?.framesPresented ?? "?"}\uD504\uB808\uC784.`,
+      description: "offscreen view surface ids + engine dbg (framesPresented \u2014 proves the shared-texture present path is alive).",
+      message: (d) => `offscreen \uC11C\uD53C\uC2A4 ${d.ids?.length ?? 0}\uAC1C, present ${d.engine?.dbg?.framesPresented ?? "?"}\uD504\uB808\uC784.`,
       handler: async () => ({
         ok: true,
         ids: [...views.values()].map((v) => ({ viewId: v.viewId, surfaceId: v.surfaceId, url: v.getUrl() })),
@@ -305,7 +305,7 @@ function activate(ctx) {
       progress.style.cssText = "position:absolute;left:0;bottom:0;height:2px;width:0;background:var(--color-accent,#3b82f6);transition:width .25s ease-out;opacity:0";
       bar.appendChild(progress);
       const cell = document.createElement("div");
-      cell.setAttribute("data-node", "osr-cell");
+      cell.setAttribute("data-node", "offscreen-cell");
       cell.style.cssText = "flex:1 1 auto;position:relative;overflow:hidden;background:transparent";
       container.append(bar, cell);
       let surfaceId = null;
@@ -483,7 +483,7 @@ function activate(ctx) {
         h.on("popup-url", (p) => {
           if (p.id !== id || typeof p.url !== "string") return;
           pendingUrl = p.url;
-          void app.commands?.execute("view.open", { program: "browser-osr" }).then((o) => {
+          void app.commands?.execute("view.open", { program: "browser-chromium-offscreen" }).then((o) => {
             if (!o?.ok) {
               pendingUrl = null;
               entry.navigate(normalizeUrl(p.url));
@@ -491,12 +491,12 @@ function activate(ctx) {
           });
         });
       })();
-      container.__osrCleanup = teardown;
+      container.__offscreenCleanup = teardown;
     },
     unmount(container) {
       const c = container;
-      c.__osrCleanup?.();
-      c.__osrCleanup = void 0;
+      c.__offscreenCleanup?.();
+      c.__offscreenCleanup = void 0;
     }
   };
   ctx.subscriptions.push(app.ui.registerView("content", provider));
