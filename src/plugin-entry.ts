@@ -356,7 +356,14 @@ export function activate(ctx: PluginContext): void {
         const ro = new ResizeObserver(arm);
         ro.observe(cell);
         window.addEventListener("resize", arm);
-        // 탭 파킹 시 offscreen 레이어를 숨긴다(코어는 native webview 만 숨김) — 안 하면 다른 탭 위로 비침.
+        // 탭/시트 파킹 — 1차 신호는 코어 view.parked(유효 가시성의 단일 소유). IO 는 안전망
+        // (코어 신호가 못 덮는 레이아웃 변화·초기 상태)으로 유지한다. 둘 다 멱등(hidden 토글).
+        const offPark = app.events.on("view.parked", (p) => {
+          const q = p as { viewId?: string; parked?: boolean };
+          if (q.viewId !== viewId) return;
+          void send({ type: "hidden", id, hidden: !!q.parked });
+          if (!q.parked) { lastKey = ""; arm(); }
+        });
         const io = new IntersectionObserver((entries) => {
           const visible = entries.some((e) => e.isIntersecting);
           void send({ type: "hidden", id, hidden: !visible });
@@ -364,7 +371,7 @@ export function activate(ctx: PluginContext): void {
         });
         io.observe(cell);
         arm();
-        return () => { ro.disconnect(); io.disconnect(); window.removeEventListener("resize", arm); if (raf) cancelAnimationFrame(raf); };
+        return () => { offPark.dispose(); ro.disconnect(); io.disconnect(); window.removeEventListener("resize", arm); if (raf) cancelAnimationFrame(raf); };
       }
 
       // ── 재부착 후보 — 이전 인스턴스/이전 mount 가 이 viewId 로 만든 서피스(페이지 상태 보존).
