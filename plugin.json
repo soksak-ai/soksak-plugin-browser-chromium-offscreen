@@ -80,7 +80,11 @@
           "content"
         ],
         "defaultPlacement": "content",
-        "transparent": true
+        "transparent": true,
+        "status": [
+          "loading",
+          "error"
+        ]
       }
     ],
     "programs": [
