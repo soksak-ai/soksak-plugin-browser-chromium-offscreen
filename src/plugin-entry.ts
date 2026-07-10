@@ -3,7 +3,20 @@
 // mode:"offscreen" 으로 연다: 엔진이 창 없이 그려 공유 텍스처를 코어 소유 레이어에 present 하고,
 // 이 뷰의 DOM 셀이 모든 입력을 받아 프로토콜(mouse/wheel/key/ime)로 포워딩한다. 코어는 메시지 의미를
 // 모른다(맹목 relay) — 결합은 매니페스트 sidecars[] + 메시지뿐(약결합). eval 없음.
-import { forwardInput, normalizeUrl, createLifecycle, reclaimTargets, createBrowserToolbar } from "soksak-kit-browser-common";
+import {
+  forwardInput,
+  normalizeUrl,
+  createLifecycle,
+  reclaimTargets,
+  createBrowserToolbar,
+  domTextBody,
+  domHtmlBody,
+  domQueryBody,
+  domClickBody,
+  domFillBody,
+  domSubmitBody,
+  domWaitForBody,
+} from "soksak-kit-browser-common";
 
 // ── 앱 API 표면(코어 PluginApi 부분집합) ────────────────────────────────────────────────────
 interface SidecarHandle {
@@ -42,6 +55,8 @@ interface PluginApi {
 interface ViewContext {
   viewId: string | null;
   setTitle?: (title: string) => void;
+  // 탭 아이콘(콘텐츠 사실 — 파비콘 URL). 빈 값 = 해제(매니페스트 아이콘 폴백).
+  setIcon?: (icon: string) => void;
   // 복원 seam(B3) — 복원 마운트면 setRestoreState 로 기록했던 상태. 새 뷰는 null.
   restore?: { cwd: string | null; state: unknown } | null;
   // 관찰 상태 보고(B3) — 뷰 레코드 영속. kv 에 viewId 키 영속 금지(재사용 충돌).
@@ -237,6 +252,143 @@ export function activate(ctx: PluginContext): void {
         return { ok: !!out.ok, viewId: (out as { viewId?: string }).viewId };
       },
     });
+    // ── eval/dom.* — 엔진 eval verb(스펙 §8) 소비. 결과는 eval-result 이벤트(비동기)로 회수한다.
+    // 스니펫 본문은 kit 단일 소스 — 세 브라우저의 dom 커맨드 행동(AI/E2E 계약)이 동일해진다.
+    const pendingEvals = new Map<number, (r: { ok: boolean; value: unknown }) => void>();
+    let evalWired = false;
+    async function evalOnEntry(
+      e: { surfaceId: number | null; viewId: string },
+      body: string,
+      timeoutMs = 10000,
+    ): Promise<{ ok: boolean; value: unknown }> {
+      if (e.surfaceId == null) return { ok: false, value: "서피스 없음(생성 중)" };
+      const h = await engine();
+      if (!evalWired) {
+        evalWired = true;
+        h.on("eval-result", (p) => {
+          const cb = typeof p.evalId === "number" ? pendingEvals.get(p.evalId as number) : undefined;
+          if (cb) cb({ ok: !!p.ok, value: p.value });
+        });
+      }
+      const out = await send({ type: "eval", id: e.surfaceId, js: body });
+      const evalId = (out as { evalId?: number }).evalId;
+      if (typeof evalId !== "number")
+        return { ok: false, value: String((out as { error?: string }).error ?? "eval 실패") };
+      return await new Promise((resolve) => {
+        const t = setTimeout(() => {
+          pendingEvals.delete(evalId);
+          resolve({ ok: false, value: "eval 응답 시간 초과" });
+        }, timeoutMs);
+        pendingEvals.set(evalId, (r) => {
+          clearTimeout(t);
+          pendingEvals.delete(evalId);
+          resolve(r);
+        });
+      });
+    }
+    // dom.* 공통 실행기 — 타겟 해석 + eval + {ok, ...결과} 포장(native 와 동일 반환 형태).
+    async function runDom(
+      p: Record<string, unknown>,
+      body: string,
+      timeoutMs?: number,
+    ): Promise<Record<string, unknown>> {
+      const e = resolveEntry(p.viewId as string | undefined);
+      if (!e) return { ok: false, code: "NO_TARGET", message: "no active offscreen browser view" };
+      const r = await evalOnEntry(e, body, timeoutMs);
+      if (!r.ok) return { ok: false, code: "INTERNAL", message: String(r.value) };
+      const v = r.value;
+      if (v && typeof v === "object" && !Array.isArray(v)) return { ok: true, ...(v as object), viewId: e.viewId };
+      return { ok: true, value: v, viewId: e.viewId };
+    }
+
+    reg("eval", {
+      description:
+        "Run JavaScript in the page (async function body; return a JSON-serializable value).",
+      triggers: { ko: "자바스크립트 실행 페이지 스크립트 eval" },
+      params: {
+        js: { type: "string", description: "JS body — must return a JSON-serializable value", required: true },
+        viewId: { type: "string" },
+      },
+      handler: async (p) => {
+        const e = resolveEntry(p.viewId as string | undefined);
+        if (!e) return { ok: false, code: "NO_TARGET", message: "no active offscreen browser view" };
+        const r = await evalOnEntry(e, String(p.js ?? ""));
+        return r.ok
+          ? { ok: true, value: r.value, viewId: e.viewId }
+          : { ok: false, code: "INTERNAL", message: String(r.value) };
+      },
+    });
+    reg("dom.text", {
+      description: "Get the visible text of the page or a specific selector element.",
+      triggers: { ko: "DOM 텍스트 읽기 페이지 텍스트 선택자 텍스트" },
+      params: {
+        selector: { type: "string", description: "CSS selector (omit = entire body)" },
+        maxLength: { type: "number", description: "Max character length" },
+        viewId: { type: "string" },
+      },
+      handler: (p) =>
+        runDom(p, domTextBody(p.selector ? String(p.selector) : undefined, typeof p.maxLength === "number" ? p.maxLength : 20000)),
+    });
+    reg("dom.html", {
+      description: "Get the HTML of the page or a specific selector element.",
+      triggers: { ko: "DOM HTML 읽기 페이지 소스" },
+      params: {
+        selector: { type: "string", description: "CSS selector (omit = entire document)" },
+        maxLength: { type: "number", description: "Max character length" },
+        viewId: { type: "string" },
+      },
+      handler: (p) =>
+        runDom(p, domHtmlBody(p.selector ? String(p.selector) : undefined, typeof p.maxLength === "number" ? p.maxLength : 20000)),
+    });
+    reg("dom.query", {
+      description:
+        "Summarize matching elements (tag / text / attributes) for a CSS selector — use to understand page structure.",
+      triggers: { ko: "DOM 요소 조회 선택자 매칭 구조 파악" },
+      params: {
+        selector: { type: "string", description: "CSS selector", required: true },
+        limit: { type: "number", description: "Max element count" },
+        viewId: { type: "string" },
+      },
+      handler: (p) =>
+        runDom(p, domQueryBody(String(p.selector), typeof p.limit === "number" ? p.limit : 20)),
+    });
+    reg("dom.click", {
+      description: "Click the first element matching a CSS selector.",
+      triggers: { ko: "DOM 클릭 버튼 클릭 링크 클릭 페이지 클릭" },
+      params: { selector: { type: "string", description: "CSS selector", required: true }, viewId: { type: "string" } },
+      handler: (p) => runDom(p, domClickBody(String(p.selector))),
+    });
+    reg("dom.fill", {
+      description:
+        "Fill an input element with a value (fires input/change events — React form compatible).",
+      triggers: { ko: "DOM 입력 채우기 폼 입력 텍스트 입력 필드 채우기" },
+      params: {
+        selector: { type: "string", description: "CSS selector", required: true },
+        text: { type: "string", description: "Value to enter", required: true },
+        viewId: { type: "string" },
+      },
+      handler: (p) => runDom(p, domFillBody(String(p.selector), String(p.text ?? ""))),
+    });
+    reg("dom.submit", {
+      description: "Submit a form (selector can be the form element or any element inside it).",
+      triggers: { ko: "폼 제출 submit 전송 양식 제출" },
+      params: { selector: { type: "string", description: "CSS selector", required: true }, viewId: { type: "string" } },
+      handler: (p) => runDom(p, domSubmitBody(String(p.selector))),
+    });
+    reg("dom.wait-for", {
+      description: "Wait until a selector appears on the page (dynamic pages — uses MutationObserver).",
+      triggers: { ko: "요소 대기 나타날 때까지 기다리기 동적 로딩 대기" },
+      params: {
+        selector: { type: "string", description: "CSS selector", required: true },
+        timeoutMs: { type: "number", description: "Max wait time (ms)" },
+        viewId: { type: "string" },
+      },
+      handler: (p) => {
+        const t = typeof p.timeoutMs === "number" ? p.timeoutMs : 5000;
+        return runDom(p, domWaitForBody(String(p.selector), t), t + 5000);
+      },
+    });
+
     reg("surface.close", {
       description: "Close one engine surface by id (diagnostics). Cleans the ledger and the reattach map entry that points to it. The owning view recreates its surface on next remount.",
       params: { id: { type: "number", required: true, description: "engine surface id (see stats)" } },
@@ -456,6 +608,9 @@ export function activate(ctx: PluginContext): void {
         const h = await engine();
         h.on("nav", (p) => { if (p.id === id && typeof p.url === "string") setUrlBar(p.url); });
         h.on("title", (p) => { if (p.id === id && typeof p.title === "string") vctx.setTitle?.(p.title); });
+        // 파비콘 — title 동형의 콘텐츠 사실. 빈 url(파비콘 없는 페이지)도 그대로 보고해 이전
+        // 페이지의 stale 아이콘이 남지 않게 한다(해제).
+        h.on("favicon", (p) => { if (p.id === id && typeof p.url === "string") vctx.setIcon?.(p.url); });
         h.on("cursor", (p) => { if (p.id === id) cell.style.cursor = String(p.type ?? "default"); });
         h.on("loading", (p) => {
           if (p.id !== id) return;

@@ -335,6 +335,64 @@ function createBrowserToolbar(container, cb) {
   };
 }
 
+// ../../kits/soksak-kit-browser-common/src/dom-snippets.ts
+var jsStr = (s) => JSON.stringify(s);
+function domTextBody(selector, maxLength = 2e4) {
+  return selector ? `const el = document.querySelector(${jsStr(selector)}); return el ? el.innerText.slice(0, ${maxLength}) : null;` : `return document.body.innerText.slice(0, ${maxLength});`;
+}
+function domHtmlBody(selector, maxLength = 2e4) {
+  return selector ? `const el = document.querySelector(${jsStr(selector)}); return el ? el.outerHTML.slice(0, ${maxLength}) : null;` : `return document.documentElement.outerHTML.slice(0, ${maxLength});`;
+}
+function domQueryBody(selector, limit = 20) {
+  return `
+          const all = [...document.querySelectorAll(${jsStr(selector)})];
+          return { count: all.length, elements: all.slice(0, ${limit}).map(e => ({
+            tag: e.tagName.toLowerCase(),
+            text: (e.innerText || "").trim().slice(0, 120) || undefined,
+            id: e.id || undefined,
+            class: (typeof e.className === "string" && e.className) || undefined,
+            name: e.getAttribute("name") || undefined,
+            href: e.getAttribute("href") || undefined,
+            type: e.getAttribute("type") || undefined,
+            value: e.value !== undefined ? String(e.value).slice(0, 120) : undefined,
+          })) };`;
+}
+function domClickBody(selector) {
+  return `const el = document.querySelector(${jsStr(selector)}); if (!el) return { clicked: false, reason: "selector \uB9E4\uCE6D \uC5C6\uC74C" }; el.click(); return { clicked: true };`;
+}
+function domFillBody(selector, text) {
+  return `
+          const el = document.querySelector(${jsStr(selector)});
+          if (!el) return { filled: false, reason: "selector \uB9E4\uCE6D \uC5C6\uC74C" };
+          const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+          const setter = Object.getOwnPropertyDescriptor(proto, "value")?.set;
+          if (setter) setter.call(el, ${jsStr(text)}); else el.value = ${jsStr(text)};
+          el.dispatchEvent(new Event("input", { bubbles: true }));
+          el.dispatchEvent(new Event("change", { bubbles: true }));
+          return { filled: true };`;
+}
+function domSubmitBody(selector) {
+  return `
+          const el = document.querySelector(${jsStr(selector)});
+          if (!el) return { submitted: false, reason: "selector \uB9E4\uCE6D \uC5C6\uC74C" };
+          const form = el instanceof HTMLFormElement ? el : el.closest("form");
+          if (!form) return { submitted: false, reason: "form \uC5C6\uC74C" };
+          form.requestSubmit ? form.requestSubmit() : form.submit();
+          return { submitted: true };`;
+}
+function domWaitForBody(selector, timeoutMs = 5e3) {
+  return `
+          const find = () => document.querySelector(${jsStr(selector)});
+          if (find()) return { found: true };
+          return await new Promise((resolve) => {
+            const obs = new MutationObserver(() => {
+              if (find()) { obs.disconnect(); clearTimeout(timer); resolve({ found: true }); }
+            });
+            const timer = setTimeout(() => { obs.disconnect(); resolve({ found: false }); }, ${timeoutMs});
+            obs.observe(document.documentElement, { childList: true, subtree: true });
+          });`;
+}
+
 // src/plugin-entry.ts
 function measureRect(el) {
   const r = el.getBoundingClientRect();
@@ -492,6 +550,122 @@ function activate(ctx) {
         app.events.progress?.("open", pendingUrl ?? "");
         const out = await app.commands.execute("view.open", { program: "browser-chromium-offscreen" });
         return { ok: !!out.ok, viewId: out.viewId };
+      }
+    });
+    const pendingEvals = /* @__PURE__ */ new Map();
+    let evalWired = false;
+    async function evalOnEntry(e, body, timeoutMs = 1e4) {
+      if (e.surfaceId == null) return { ok: false, value: "\uC11C\uD53C\uC2A4 \uC5C6\uC74C(\uC0DD\uC131 \uC911)" };
+      const h = await engine();
+      if (!evalWired) {
+        evalWired = true;
+        h.on("eval-result", (p) => {
+          const cb = typeof p.evalId === "number" ? pendingEvals.get(p.evalId) : void 0;
+          if (cb) cb({ ok: !!p.ok, value: p.value });
+        });
+      }
+      const out = await send({ type: "eval", id: e.surfaceId, js: body });
+      const evalId = out.evalId;
+      if (typeof evalId !== "number")
+        return { ok: false, value: String(out.error ?? "eval \uC2E4\uD328") };
+      return await new Promise((resolve) => {
+        const t = setTimeout(() => {
+          pendingEvals.delete(evalId);
+          resolve({ ok: false, value: "eval \uC751\uB2F5 \uC2DC\uAC04 \uCD08\uACFC" });
+        }, timeoutMs);
+        pendingEvals.set(evalId, (r) => {
+          clearTimeout(t);
+          pendingEvals.delete(evalId);
+          resolve(r);
+        });
+      });
+    }
+    async function runDom(p, body, timeoutMs) {
+      const e = resolveEntry(p.viewId);
+      if (!e) return { ok: false, code: "NO_TARGET", message: "no active offscreen browser view" };
+      const r = await evalOnEntry(e, body, timeoutMs);
+      if (!r.ok) return { ok: false, code: "INTERNAL", message: String(r.value) };
+      const v = r.value;
+      if (v && typeof v === "object" && !Array.isArray(v)) return { ok: true, ...v, viewId: e.viewId };
+      return { ok: true, value: v, viewId: e.viewId };
+    }
+    reg("eval", {
+      description: "Run JavaScript in the page (async function body; return a JSON-serializable value).",
+      triggers: { ko: "\uC790\uBC14\uC2A4\uD06C\uB9BD\uD2B8 \uC2E4\uD589 \uD398\uC774\uC9C0 \uC2A4\uD06C\uB9BD\uD2B8 eval" },
+      params: {
+        js: { type: "string", description: "JS body \u2014 must return a JSON-serializable value", required: true },
+        viewId: { type: "string" }
+      },
+      handler: async (p) => {
+        const e = resolveEntry(p.viewId);
+        if (!e) return { ok: false, code: "NO_TARGET", message: "no active offscreen browser view" };
+        const r = await evalOnEntry(e, String(p.js ?? ""));
+        return r.ok ? { ok: true, value: r.value, viewId: e.viewId } : { ok: false, code: "INTERNAL", message: String(r.value) };
+      }
+    });
+    reg("dom.text", {
+      description: "Get the visible text of the page or a specific selector element.",
+      triggers: { ko: "DOM \uD14D\uC2A4\uD2B8 \uC77D\uAE30 \uD398\uC774\uC9C0 \uD14D\uC2A4\uD2B8 \uC120\uD0DD\uC790 \uD14D\uC2A4\uD2B8" },
+      params: {
+        selector: { type: "string", description: "CSS selector (omit = entire body)" },
+        maxLength: { type: "number", description: "Max character length" },
+        viewId: { type: "string" }
+      },
+      handler: (p) => runDom(p, domTextBody(p.selector ? String(p.selector) : void 0, typeof p.maxLength === "number" ? p.maxLength : 2e4))
+    });
+    reg("dom.html", {
+      description: "Get the HTML of the page or a specific selector element.",
+      triggers: { ko: "DOM HTML \uC77D\uAE30 \uD398\uC774\uC9C0 \uC18C\uC2A4" },
+      params: {
+        selector: { type: "string", description: "CSS selector (omit = entire document)" },
+        maxLength: { type: "number", description: "Max character length" },
+        viewId: { type: "string" }
+      },
+      handler: (p) => runDom(p, domHtmlBody(p.selector ? String(p.selector) : void 0, typeof p.maxLength === "number" ? p.maxLength : 2e4))
+    });
+    reg("dom.query", {
+      description: "Summarize matching elements (tag / text / attributes) for a CSS selector \u2014 use to understand page structure.",
+      triggers: { ko: "DOM \uC694\uC18C \uC870\uD68C \uC120\uD0DD\uC790 \uB9E4\uCE6D \uAD6C\uC870 \uD30C\uC545" },
+      params: {
+        selector: { type: "string", description: "CSS selector", required: true },
+        limit: { type: "number", description: "Max element count" },
+        viewId: { type: "string" }
+      },
+      handler: (p) => runDom(p, domQueryBody(String(p.selector), typeof p.limit === "number" ? p.limit : 20))
+    });
+    reg("dom.click", {
+      description: "Click the first element matching a CSS selector.",
+      triggers: { ko: "DOM \uD074\uB9AD \uBC84\uD2BC \uD074\uB9AD \uB9C1\uD06C \uD074\uB9AD \uD398\uC774\uC9C0 \uD074\uB9AD" },
+      params: { selector: { type: "string", description: "CSS selector", required: true }, viewId: { type: "string" } },
+      handler: (p) => runDom(p, domClickBody(String(p.selector)))
+    });
+    reg("dom.fill", {
+      description: "Fill an input element with a value (fires input/change events \u2014 React form compatible).",
+      triggers: { ko: "DOM \uC785\uB825 \uCC44\uC6B0\uAE30 \uD3FC \uC785\uB825 \uD14D\uC2A4\uD2B8 \uC785\uB825 \uD544\uB4DC \uCC44\uC6B0\uAE30" },
+      params: {
+        selector: { type: "string", description: "CSS selector", required: true },
+        text: { type: "string", description: "Value to enter", required: true },
+        viewId: { type: "string" }
+      },
+      handler: (p) => runDom(p, domFillBody(String(p.selector), String(p.text ?? "")))
+    });
+    reg("dom.submit", {
+      description: "Submit a form (selector can be the form element or any element inside it).",
+      triggers: { ko: "\uD3FC \uC81C\uCD9C submit \uC804\uC1A1 \uC591\uC2DD \uC81C\uCD9C" },
+      params: { selector: { type: "string", description: "CSS selector", required: true }, viewId: { type: "string" } },
+      handler: (p) => runDom(p, domSubmitBody(String(p.selector)))
+    });
+    reg("dom.wait-for", {
+      description: "Wait until a selector appears on the page (dynamic pages \u2014 uses MutationObserver).",
+      triggers: { ko: "\uC694\uC18C \uB300\uAE30 \uB098\uD0C0\uB0A0 \uB54C\uAE4C\uC9C0 \uAE30\uB2E4\uB9AC\uAE30 \uB3D9\uC801 \uB85C\uB529 \uB300\uAE30" },
+      params: {
+        selector: { type: "string", description: "CSS selector", required: true },
+        timeoutMs: { type: "number", description: "Max wait time (ms)" },
+        viewId: { type: "string" }
+      },
+      handler: (p) => {
+        const t = typeof p.timeoutMs === "number" ? p.timeoutMs : 5e3;
+        return runDom(p, domWaitForBody(String(p.selector), t), t + 5e3);
       }
     });
     reg("surface.close", {
@@ -738,6 +912,9 @@ function activate(ctx) {
         });
         h.on("title", (p) => {
           if (p.id === id && typeof p.title === "string") vctx.setTitle?.(p.title);
+        });
+        h.on("favicon", (p) => {
+          if (p.id === id && typeof p.url === "string") vctx.setIcon?.(p.url);
         });
         h.on("cursor", (p) => {
           if (p.id === id) cell.style.cursor = String(p.type ?? "default");

@@ -165,6 +165,38 @@
       {
         "name": "surface.close",
         "title": "엔진 서피스 닫기(진단)"
+      },
+      {
+        "name": "eval",
+        "title": "페이지 JS 실행"
+      },
+      {
+        "name": "dom.text",
+        "title": "페이지 텍스트"
+      },
+      {
+        "name": "dom.html",
+        "title": "페이지 HTML"
+      },
+      {
+        "name": "dom.query",
+        "title": "요소 조회"
+      },
+      {
+        "name": "dom.click",
+        "title": "요소 클릭"
+      },
+      {
+        "name": "dom.fill",
+        "title": "입력 채우기"
+      },
+      {
+        "name": "dom.submit",
+        "title": "폼 제출"
+      },
+      {
+        "name": "dom.wait-for",
+        "title": "요소 대기"
       }
     ],
     "nodes": [
