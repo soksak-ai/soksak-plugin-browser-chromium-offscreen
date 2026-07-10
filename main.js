@@ -1,4 +1,4 @@
-// ../../../ai/cli/soksak-browser-kit/src/url.ts
+// ../../kits/soksak-kit-browser-shell/src/url.ts
 function normalizeUrl(raw) {
   const s = raw.trim();
   if (!s) return "about:blank";
@@ -7,7 +7,7 @@ function normalizeUrl(raw) {
   return `https://www.google.com/search?q=${encodeURIComponent(s)}`;
 }
 
-// ../../../ai/cli/soksak-browser-kit/src/nav-state.ts
+// ../../kits/soksak-kit-browser-shell/src/nav-state.ts
 var initialNavState = { loading: false, canBack: false, canForward: false };
 function renderNavState(s) {
   return {
@@ -20,7 +20,7 @@ function renderNavState(s) {
   };
 }
 
-// ../../../ai/cli/soksak-browser-kit/src/lifecycle.ts
+// ../../kits/soksak-kit-browser-shell/src/lifecycle.ts
 function createLifecycle(opts) {
   const LEDGER = `${opts.storagePrefix}-created`;
   const BYVIEW = `${opts.storagePrefix}-byview`;
@@ -63,6 +63,9 @@ function createLifecycle(opts) {
     byviewValues() {
       return Object.values(byviewRead());
     },
+    byviewEntries() {
+      return Object.entries(byviewRead());
+    },
     byviewSet(viewId, id) {
       ssWrite(BYVIEW, { ...byviewRead(), [viewId]: id });
     },
@@ -91,7 +94,7 @@ function createLifecycle(opts) {
   };
 }
 
-// ../../../ai/cli/soksak-browser-kit/src/input-forward.ts
+// ../../kits/soksak-kit-browser-shell/src/input-forward.ts
 function modsOf(e) {
   return (e.shiftKey ? 1 : 0) | (e.ctrlKey ? 2 : 0) | (e.altKey ? 4 : 0) | (e.metaKey ? 8 : 0);
 }
@@ -245,7 +248,7 @@ function forwardInput(container, send) {
   };
 }
 
-// ../../../ai/cli/soksak-browser-kit/src/toolbar.ts
+// ../../kits/soksak-kit-browser-shell/src/toolbar.ts
 function btn(node, label, title) {
   const b = document.createElement("button");
   b.type = "button";
@@ -349,10 +352,17 @@ function resolveEntry(viewId) {
   const first = views.values().next();
   return first.done ? null : first.value;
 }
+var PLUGIN_ID = "soksak-plugin-browser-chromium-offscreen";
 var pendingUrl = null;
 var lc = createLifecycle({ storagePrefix: "soksak-offscreen" });
 function activate(ctx) {
   const { app } = ctx;
+  if (app.data) {
+    void app.data.kv.keys("vurl:").then((ks) => {
+      for (const k of ks) void app.data.kv.delete(k);
+    }).catch(() => {
+    });
+  }
   let handleP = null;
   function engine() {
     if (!app.sidecar) return Promise.reject(new Error("sidecar \uAD8C\uD55C/\uC120\uC5B8 \uC5C6\uC74C"));
@@ -388,7 +398,10 @@ function activate(ctx) {
         ...lc.byviewValues(),
         ...lc.pendingCloseIds()
       ]);
-      for (const id of lc.ledgerRead()) {
+      const surfaces = stats?.surfaces;
+      const reapPool = surfaces ? surfaces.filter((x) => x.owner === PLUGIN_ID).map((x) => x.id) : lc.ledgerRead();
+      if (!surfaces) console.warn("[chromium-offscreen] \uC5D4\uC9C4\uC774 owner \uB97C \uBAA8\uB978\uB2E4(\uAD6C dylib) \u2014 \uC7A5\uBD80 \uD3F4\uBC31 \uD68C\uC218");
+      for (const id of reapPool) {
         if (!alive.has(id)) {
           lc.ledgerRemove(id);
           continue;
@@ -479,6 +492,23 @@ function activate(ctx) {
         app.events.progress?.("open", pendingUrl ?? "");
         const out = await app.commands.execute("view.open", { program: "browser-chromium-offscreen" });
         return { ok: !!out.ok, viewId: out.viewId };
+      }
+    });
+    reg("surface.close", {
+      description: "Close one engine surface by id (diagnostics). Cleans the ledger and the reattach map entry that points to it. The owning view recreates its surface on next remount.",
+      params: { id: { type: "number", required: true, description: "engine surface id (see stats)" } },
+      handler: async (p) => {
+        const id = Number(p.id);
+        if (!Number.isFinite(id)) return { ok: false, error: "id \uD544\uC694" };
+        const r = await send({ type: "close", id });
+        if (r && r.ok) lc.ledgerRemove(id);
+        for (const [vid, sid] of [...views.entries()].map((e) => [e[0], e[1].surfaceId])) {
+          if (sid === id) views.get(vid).surfaceId = null;
+        }
+        for (const [vid, sid] of lc.byviewEntries()) {
+          if (sid === id) lc.byviewDelete(vid);
+        }
+        return { ok: true, closed: id };
       }
     });
     reg("stats", {
@@ -597,18 +627,16 @@ function activate(ctx) {
         currentUrl = u;
         tb.setUrl(u);
         tb.setBookmarked(bookmarks.has(u));
-        if (app.data && u && u !== "about:blank") void app.data.kv.set(`vurl:${viewId}`, u);
+        if (u && u !== "about:blank") vctx.setRestoreState?.({ url: u });
       }
-      async function startUrl() {
+      function startUrl() {
         if (pendingUrl) {
           const u = pendingUrl;
           pendingUrl = null;
           return normalizeUrl(u);
         }
-        if (app.data) {
-          const saved = await app.data.kv.get(`vurl:${viewId}`);
-          if (saved) return normalizeUrl(saved);
-        }
+        const rs = vctx.restore?.state;
+        if (typeof rs?.url === "string" && rs.url) return normalizeUrl(rs.url);
         return normalizeUrl(String(app.settings?.get("homeUrl") ?? "https://example.com"));
       }
       function follow(id) {
@@ -637,6 +665,15 @@ function activate(ctx) {
         const ro = new ResizeObserver(arm);
         ro.observe(cell);
         window.addEventListener("resize", arm);
+        const offPark = app.events.on("view.parked", (p) => {
+          const q = p;
+          if (q.viewId !== viewId) return;
+          void send({ type: "hidden", id, hidden: !!q.parked });
+          if (!q.parked) {
+            lastKey = "";
+            arm();
+          }
+        });
         const io = new IntersectionObserver((entries) => {
           const visible = entries.some((e) => e.isIntersecting);
           void send({ type: "hidden", id, hidden: !visible });
@@ -648,6 +685,7 @@ function activate(ctx) {
         io.observe(cell);
         arm();
         return () => {
+          offPark.dispose();
           ro.disconnect();
           io.disconnect();
           window.removeEventListener("resize", arm);
@@ -660,15 +698,15 @@ function activate(ctx) {
         let id;
         if (priorId != null) {
           id = priorId;
-          const saved = app.data ? await app.data.kv.get(`vurl:${viewId}`) : null;
-          if (saved) {
-            currentUrl = saved;
-            tb.setUrl(saved);
+          const rs = vctx.restore?.state;
+          if (typeof rs?.url === "string" && rs.url) {
+            currentUrl = rs.url;
+            tb.setUrl(rs.url);
           }
         } else {
-          const first = await startUrl();
+          const first = startUrl();
           const r = measureRect(cell);
-          const out = await send({ type: "create", mode: "offscreen", scale: window.devicePixelRatio || 1, x: r.x, y: r.y, w: r.w, h: r.h, url: first });
+          const out = await send({ type: "create", mode: "offscreen", owner: PLUGIN_ID, scale: window.devicePixelRatio || 1, x: r.x, y: r.y, w: r.w, h: r.h, url: first });
           const created = out && typeof out.id === "number" ? out.id : null;
           if (created == null) {
             cell.textContent = "\uC5D4\uC9C4 \uC11C\uD53C\uC2A4 \uC0DD\uC131 \uC2E4\uD328";

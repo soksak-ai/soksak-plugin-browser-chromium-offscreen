@@ -3,7 +3,7 @@
 // mode:"offscreen" 으로 연다: 엔진이 창 없이 그려 공유 텍스처를 코어 소유 레이어에 present 하고,
 // 이 뷰의 DOM 셀이 모든 입력을 받아 프로토콜(mouse/wheel/key/ime)로 포워딩한다. 코어는 메시지 의미를
 // 모른다(맹목 relay) — 결합은 매니페스트 sidecars[] + 메시지뿐(약결합). eval 없음.
-import { forwardInput, normalizeUrl, createLifecycle, reclaimTargets, createBrowserToolbar } from "soksak-browser-kit";
+import { forwardInput, normalizeUrl, createLifecycle, reclaimTargets, createBrowserToolbar } from "soksak-kit-browser-shell";
 
 // ── 앱 API 표면(코어 PluginApi 부분집합) ────────────────────────────────────────────────────
 interface SidecarHandle {
@@ -57,7 +57,7 @@ function measureRect(el: HTMLElement): { x: number; y: number; w: number; h: num
   const y = Math.ceil(r.top);
   return { x, y, w: Math.max(1, Math.floor(r.right) - x), h: Math.max(1, Math.floor(r.bottom) - y) };
 }
-// normalizeUrl 은 soksak-browser-kit 이 단일 진실(세 브라우저 공유).
+// normalizeUrl 은 soksak-kit-browser-shell 이 단일 진실(세 브라우저 공유).
 
 // ── 뷰 레지스트리(커맨드가 활성/지정 뷰의 서피스에 접근) ────────────────────────────────────
 interface ViewEntry {
@@ -79,9 +79,10 @@ function resolveEntry(viewId?: string): ViewEntry | null {
 }
 
 // 새 탭이 열 URL(open 커맨드 / popup-url 이 set → 다음 mount 가 1회 소비).
+const PLUGIN_ID = "soksak-plugin-browser-chromium-offscreen";
 let pendingUrl: string | null = null;
 
-// ── 재적재 생존 수명주기 — soksak-browser-kit 이 단일 진실(규칙·근거는 kit lifecycle 모듈 주석).
+// ── 재적재 생존 수명주기 — soksak-kit-browser-shell 이 단일 진실(규칙·근거는 kit lifecycle 모듈 주석).
 const lc = createLifecycle({ storagePrefix: "soksak-offscreen" });
 
 export function activate(ctx: PluginContext): void {
@@ -138,7 +139,14 @@ export function activate(ctx: PluginContext): void {
         ...lc.byviewValues(),
         ...lc.pendingCloseIds(),
       ]);
-      for (const id of lc.ledgerRead()) {
+      // 회수 근거는 엔진의 소유 기록(stats.surfaces.owner) — 로컬 장부는 유실될 수 있어 근거가
+      // 못 된다(실측: 장부 밖 언데드 서피스 잔존). 내 소유이면서 아무도 점유하지 않은 id 만 닫는다.
+      const surfaces = stats?.surfaces as Array<{ id: number; owner: string }> | undefined;
+      const reapPool = surfaces
+        ? surfaces.filter((x) => x.owner === PLUGIN_ID).map((x) => x.id)
+        : lc.ledgerRead(); // 구 엔진 폴백(owner 미지원) — 장부 기반, 장부 밖 언데드는 회수 불가
+      if (!surfaces) console.warn("[chromium-offscreen] 엔진이 owner 를 모른다(구 dylib) — 장부 폴백 회수");
+      for (const id of reapPool) {
         if (!alive.has(id)) { lc.ledgerRemove(id); continue; } // 엔진에 이미 없음 — 장부만 청소
         if (claimed.has(id)) continue;
         console.warn(`[chromium-offscreen] 유령 서피스 회수: id=${id}`);
@@ -229,6 +237,23 @@ export function activate(ctx: PluginContext): void {
         return { ok: !!out.ok, viewId: (out as { viewId?: string }).viewId };
       },
     });
+    reg("surface.close", {
+      description: "Close one engine surface by id (diagnostics). Cleans the ledger and the reattach map entry that points to it. The owning view recreates its surface on next remount.",
+      params: { id: { type: "number", required: true, description: "engine surface id (see stats)" } },
+      handler: async (p) => {
+        const id = Number((p as { id?: unknown }).id);
+        if (!Number.isFinite(id)) return { ok: false, error: "id 필요" };
+        const r = await send({ type: "close", id });
+        if (r && (r as { ok?: boolean }).ok) lc.ledgerRemove(id);
+        for (const [vid, sid] of [...views.entries()].map((e) => [e[0], e[1].surfaceId] as const)) {
+          if (sid === id) views.get(vid)!.surfaceId = null;
+        }
+        for (const [vid, sid] of lc.byviewEntries()) {
+          if (sid === id) lc.byviewDelete(vid);
+        }
+        return { ok: true, closed: id };
+      },
+    });
     reg("stats", {
       description: "offscreen view surface ids + engine dbg (framesPresented — proves the shared-texture present path is alive).",
       message: (d) => `offscreen 서피스 ${(d.ids as unknown[] | undefined)?.length ?? 0}개, present ${(d.engine as { dbg?: { framesPresented?: number } } | undefined)?.dbg?.framesPresented ?? "?"}프레임.`,
@@ -274,7 +299,7 @@ export function activate(ctx: PluginContext): void {
       container.style.cssText = "position:absolute;inset:0;display:flex;flex-direction:column;background:transparent";
 
       const homeUrl = (): string => normalizeUrl(String(app.settings?.get("homeUrl") ?? "https://example.com"));
-      // ── 툴바 — 공용 구현(soksak-browser-kit createBrowserToolbar): 세 브라우저 동일 DOM·노드·외형 ──
+      // ── 툴바 — 공용 구현(soksak-kit-browser-shell createBrowserToolbar): 세 브라우저 동일 DOM·노드·외형 ──
       const tb = createBrowserToolbar(container, {
         onNavigate: (raw) => entry.navigate(normalizeUrl(raw)),
         onBack: () => { if (surfaceId != null) void send({ type: "back", id: surfaceId }); },
@@ -406,7 +431,7 @@ export function activate(ctx: PluginContext): void {
         } else {
           const first = startUrl();
           const r = measureRect(cell);
-          const out = await send({ type: "create", mode: "offscreen", scale: window.devicePixelRatio || 1, x: r.x, y: r.y, w: r.w, h: r.h, url: first });
+          const out = await send({ type: "create", mode: "offscreen", owner: PLUGIN_ID, scale: window.devicePixelRatio || 1, x: r.x, y: r.y, w: r.w, h: r.h, url: first });
           const created = out && typeof out.id === "number" ? (out.id as number) : null;
           if (created == null) { cell.textContent = "엔진 서피스 생성 실패"; return; }
           id = created;

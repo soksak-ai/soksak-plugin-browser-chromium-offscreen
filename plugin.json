@@ -161,6 +161,10 @@
           "ko": "엔진 서피스 진단",
           "en": "Engine surface diagnostics"
         }
+      },
+      {
+        "name": "surface.close",
+        "title": "엔진 서피스 닫기(진단)"
       }
     ],
     "nodes": [

@@ -1,4 +1,7 @@
 node_modules/
 
+# 생성 파일 — 빌더가 SOKSAK_HOME 발견으로 재생성(머신 절대경로 포함, 커밋 금지)
+tsconfig.paths.json
+
 # local-only working notes (never committed)
 secret/
