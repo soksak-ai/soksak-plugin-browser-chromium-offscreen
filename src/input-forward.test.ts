@@ -76,20 +76,71 @@ describe("forwardInput", () => {
     expect(sent.filter((m) => m.type === "key")).toHaveLength(0);
   });
 
-  it("한글 조합: compositionupdate 는 ime set(caret=UTF-16 길이), compositionend 는 commit", () => {
+  it("한글 조합(표준 경로): compositionupdate 는 ime set(caret=UTF-16 길이), compositionend 는 commit", () => {
     const p = proxy();
-    p.dispatchEvent(new CompositionEvent("compositionstart", { data: "" }));
     p.dispatchEvent(new CompositionEvent("compositionupdate", { data: "하" }));
     p.dispatchEvent(new CompositionEvent("compositionupdate", { data: "한" }));
     p.dispatchEvent(new CompositionEvent("compositionend", { data: "한글" }));
     const ime = sent.filter((m) => m.type === "ime");
     expect(ime).toEqual([
-      { type: "ime", kind: "set", text: "", caret: 0 },
       { type: "ime", kind: "set", text: "하", caret: 1 },
       { type: "ime", kind: "set", text: "한", caret: 1 },
       { type: "ime", kind: "commit", text: "한글" },
     ]);
+    // 조합 시작이 CEF IME 컨텍스트를 켠다 — focus 가 첫 ime set 보다 먼저.
+    expect(sent.findIndex((m) => m.type === "focus")).toBeLessThan(sent.findIndex((m) => m.type === "ime"));
     expect(p.value).toBe(""); // 커밋 후 프록시 잔여값 청소.
+  });
+
+  // WKWebView 비표준 경로(WebKit bug 274700) — composition 이벤트 없이 input 으로 온다.
+  // 실측 시퀀스: insertText(새 음절의 첫 자모) → insertReplacementText(조합 갱신 반복) → 종결키.
+  function inputEvent(inputType: string, data: string | null): Event {
+    const e = new Event("input", { bubbles: true, cancelable: true });
+    Object.defineProperty(e, "inputType", { value: inputType });
+    Object.defineProperty(e, "data", { value: data });
+    return e;
+  }
+
+  it("한글 조합(WKWebView 비표준): input 이벤트가 ime set 을 만들고 종결키가 commit 후 키를 포워딩", () => {
+    const p = proxy();
+    p.dispatchEvent(inputEvent("insertText", "ㅎ"));
+    p.dispatchEvent(inputEvent("insertReplacementText", "하"));
+    p.dispatchEvent(inputEvent("insertReplacementText", "한"));
+    p.dispatchEvent(keyEvent("keydown", { key: " ", keyCode: 32 })); // 종결키
+    const ime = sent.filter((m) => m.type === "ime");
+    expect(ime).toEqual([
+      { type: "ime", kind: "set", text: "ㅎ", caret: 1 },
+      { type: "ime", kind: "set", text: "하", caret: 1 },
+      { type: "ime", kind: "set", text: "한", caret: 1 },
+      { type: "ime", kind: "commit", text: "한" },
+    ]);
+    // 음절 확정(commit)이 종결키 포워딩보다 먼저다 — 순서 뒤집힘 방지.
+    const commitIdx = sent.findIndex((m) => m.type === "ime" && m.kind === "commit");
+    const keyIdx = sent.findIndex((m) => m.type === "key" && m.kind === "down");
+    expect(commitIdx).toBeLessThan(keyIdx);
+  });
+
+  it("한글 조합(WKWebView 비표준): 새 음절 insertText 는 이전 음절을 먼저 commit 한다", () => {
+    const p = proxy();
+    p.dispatchEvent(inputEvent("insertText", "ㅎ"));
+    p.dispatchEvent(inputEvent("insertReplacementText", "한"));
+    p.dispatchEvent(inputEvent("insertText", "ㄱ")); // 다음 음절 시작 — "한" 확정
+    p.dispatchEvent(inputEvent("insertReplacementText", "글"));
+    const ime = sent.filter((m) => m.type === "ime");
+    expect(ime).toEqual([
+      { type: "ime", kind: "set", text: "ㅎ", caret: 1 },
+      { type: "ime", kind: "set", text: "한", caret: 1 },
+      { type: "ime", kind: "commit", text: "한" },
+      { type: "ime", kind: "set", text: "ㄱ", caret: 1 },
+      { type: "ime", kind: "set", text: "글", caret: 1 },
+    ]);
+  });
+
+  it("한글 조합(WKWebView 비표준): 백스페이스로 조합이 비면 set 빈 문자열로 preedit 을 지운다", () => {
+    const p = proxy();
+    p.dispatchEvent(inputEvent("insertText", "ㅎ"));
+    p.dispatchEvent(inputEvent("deleteContentBackward", null));
+    expect(sent.filter((m) => m.type === "ime").at(-1)).toMatchObject({ kind: "set", text: "", caret: 0 });
   });
 
   it("빈 데이터의 compositionend 는 cancel — 조합 취소(ESC)의 정확한 전달", () => {

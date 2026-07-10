@@ -1,8 +1,9 @@
 // 입력 포워딩(SIDECARS.md §8 offscreen) — offscreen 셀은 코어 hitTest 에 뚫리지 않으므로 DOM 이
 // 모든 입력을 소유하고, 이 모듈이 그것을 프로토콜 메시지(mouse/wheel/key/ime/focus)로 변환한다.
-// 좌표는 표면-로컬 CSS px(엔진 DIP 와 동일 단위). 키보드·한글 조합은 숨김 편집 프록시가 받는다 —
-// 앱 웹뷰의 네이티브 IME(NSTextInputClient)가 조합을 만들고 composition 이벤트를 ime 메시지로
-// 브리지한다(합성 키 이벤트로 조합을 흉내내는 것 금지 — 스펙 §8).
+// 좌표는 표면-로컬 CSS px(엔진 DIP 와 동일 단위). 키보드·한글 조합은 투명 편집 프록시가 받는다 —
+// 앱 웹뷰의 네이티브 IME(NSTextInputClient)가 조합을 만든다. WKWebView 는 한글을 composition 이벤트가
+// 아니라 input(insertReplacementText/insertText) 으로 내므로(WebKit bug 274700) 그 경로를 잡아 ime
+// 메시지로 브리지한다(합성 키 이벤트로 조합을 흉내내는 것 금지 — 스펙 §8).
 //
 // send 는 표면 id 가 이미 바인딩된 전송자 — 이 모듈은 {type, ...} 만 만든다(테스트 가능 경계).
 
@@ -22,8 +23,12 @@ export function forwardInput(container: HTMLElement, send: SendInput): () => voi
   const proxy = document.createElement("input");
   proxy.type = "text";
   proxy.setAttribute("aria-hidden", "true");
+  // 실제로 렌더되되 눈엔 안 보이게(투명 글자·캐럿·배경) — opacity:0/1px 은 WKWebView 가 "렌더 안 됨"으로
+  // 보고 IME 조합(compositionstart/update)을 아예 안 엮는다(실측: keydown 229 만 오고 composition 0).
+  // 뷰포트 안 실크기 요소라야 macOS IME 가 조합을 건다. caret 위치로 이동시켜 후보창을 텍스트 옆에 띄운다.
   proxy.style.cssText =
-    "position:absolute;left:0;top:0;width:1px;height:1px;opacity:0;border:0;padding:0;pointer-events:none;";
+    "position:absolute;left:0;top:0;width:2em;height:1.4em;border:0;padding:0;margin:0;" +
+    "background:transparent;color:transparent;caret-color:transparent;outline:none;pointer-events:none;";
   container.appendChild(proxy);
 
   // mousemove 코얼레싱 — 이벤트 레이트(120Hz+)를 프레임당 1회로 줄인다(최신만 유효).
@@ -66,9 +71,47 @@ export function forwardInput(container: HTMLElement, send: SendInput): () => voi
   };
   const onContext = (e: MouseEvent): void => e.preventDefault();
 
-  // 키보드 — 조합 중(229/isComposing)은 IME 경로가 소유하므로 key 포워딩을 건너뛴다.
+  // ── 한글/CJK IME 브리지 (WebKit bug 274700 — src/vendor/xterm-addon-webkit-ime 확인) ──
+  // WKWebView 는 한글 IME 를 두 경로로 낸다:
+  //   표준   : compositionstart/update/end 발화.
+  //   비표준 : composition 이벤트 없음. input(insertReplacementText=조합 갱신, insertText Hangul=음절)로 온다.
+  // 실측상 이 프록시는 비표준 경로다(로그: keydown 229 만 오고 composition 0). 두 경로 모두 pending
+  // 음절을 추적해 CEF ime_set(조합 preedit)/ime_commit(확정)으로 브리지한다.
+  let composing = false;
+  let pending = "";
+  const isHangul = (s: string): boolean => {
+    const cp = s ? (s.codePointAt(0) ?? 0) : 0;
+    return (
+      (cp >= 0x1100 && cp <= 0x11ff) || (cp >= 0x3130 && cp <= 0x318f) ||
+      (cp >= 0xac00 && cp <= 0xd7af) || (cp >= 0xa960 && cp <= 0xa97f) || (cp >= 0xd7b0 && cp <= 0xd7ff)
+    );
+  };
+  const setPreedit = (text: string): void => {
+    // 조합 시작 시 브라우저 포커스를 재확인한다 — CEF OSR 은 ime_set_composition 이 먹으려면 SetFocus(1)
+    // 로 IME 컨텍스트가 켜져 있어야 한다(imetest 직접 주입은 focus 를 먼저 보내 성공했으나, 실제 흐름은
+    // 클릭 때만 보내 조합 시점엔 꺼져 있었다 — ASCII 는 send_key_event 라 무관하게 들어갔다).
+    if (!composing && text.length > 0) send({ type: "focus" });
+    composing = text.length > 0;
+    pending = text;
+    send({ type: "ime", kind: "set", text, caret: text.length });
+  };
+  const commitPending = (): void => {
+    if (!composing) return;
+    const t = pending;
+    composing = false;
+    pending = "";
+    if (t) send({ type: "ime", kind: "commit", text: t });
+  };
+  const clearComposition = (): void => {
+    composing = false;
+    pending = "";
+    send({ type: "ime", kind: "set", text: "", caret: 0 });
+  };
+
   const onKeyDown = (e: KeyboardEvent): void => {
-    if (e.isComposing || e.keyCode === 229) return;
+    // 조합 중 비-IME 키(스페이스·엔터·ASCII 등)는 pending 을 먼저 확정한 뒤 그 키를 포워딩한다.
+    if (composing && !e.isComposing && e.keyCode !== 229) commitPending();
+    if (e.isComposing || e.keyCode === 229) return; // IME 키 — input 이벤트가 담당
     e.preventDefault();
     const mods = modsOf(e);
     send({ type: "key", kind: "down", code: e.keyCode, mods });
@@ -80,23 +123,41 @@ export function forwardInput(container: HTMLElement, send: SendInput): () => voi
     if (e.isComposing || e.keyCode === 229) return;
     send({ type: "key", kind: "up", code: e.keyCode, mods: modsOf(e) });
   };
-  // 한글 조합 브리지 — 조합 중 백스페이스·재조합은 compositionupdate 의 짧아진 text 로 자연 반영된다.
-  // caret 은 JS 문자열 인덱스(UTF-16) = 엔진 범위 단위와 동일.
-  const onCompStart = (): void => {
-    send({ type: "ime", kind: "set", text: "", caret: 0 });
+  // 비표준 WKWebView 조합 — input 으로 온다(composition 이벤트 없음).
+  const onInput = (e: Event): void => {
+    const ie = e as InputEvent;
+    const data = ie.data ?? "";
+    if (ie.inputType === "insertReplacementText") {
+      if (data) setPreedit(data);
+      else clearComposition();
+      return;
+    }
+    if (ie.inputType === "insertText" && data && isHangul(data)) {
+      if (composing) commitPending(); // 새 음절 시작 → 이전 음절 확정
+      setPreedit(data);
+      return;
+    }
+    if (ie.inputType === "deleteContentBackward" && composing) {
+      clearComposition();
+      return;
+    }
   };
+  // 표준 경로(비-WKWebView 엔진) — 발화하면 그대로 브리지. WKWebView 에선 안 온다.
   const onCompUpdate = (e: CompositionEvent): void => {
-    const text = e.data ?? "";
-    send({ type: "ime", kind: "set", text, caret: text.length });
+    setPreedit(e.data ?? "");
   };
   const onCompEnd = (e: CompositionEvent): void => {
     const text = e.data ?? "";
-    proxy.value = ""; // 프록시 잔여값 청소 — 다음 조합의 오염 방지.
+    composing = false;
+    pending = "";
+    proxy.value = "";
     if (text) send({ type: "ime", kind: "commit", text });
     else send({ type: "ime", kind: "cancel" });
   };
   const onBlur = (): void => {
-    send({ type: "ime", kind: "finish" }); // 포커스 이탈 — 미완 조합을 확정.
+    commitPending(); // 미완 조합 확정
+    proxy.value = ""; // 다음 조합의 오염 방지
+    send({ type: "ime", kind: "finish" });
   };
 
   container.addEventListener("mousemove", onMove);
@@ -106,7 +167,7 @@ export function forwardInput(container: HTMLElement, send: SendInput): () => voi
   container.addEventListener("contextmenu", onContext);
   proxy.addEventListener("keydown", onKeyDown);
   proxy.addEventListener("keyup", onKeyUp);
-  proxy.addEventListener("compositionstart", onCompStart);
+  proxy.addEventListener("input", onInput); // 비표준 WKWebView 조합 경로(핵심)
   proxy.addEventListener("compositionupdate", onCompUpdate);
   proxy.addEventListener("compositionend", onCompEnd);
   proxy.addEventListener("blur", onBlur);
