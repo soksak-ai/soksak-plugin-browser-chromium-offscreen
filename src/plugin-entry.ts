@@ -39,7 +39,14 @@ interface PluginApi {
   events: { on: (event: string, cb: (p: unknown) => void) => Disposable; progress?: (cmd: string, delta: unknown) => void };
   data?: { kv: KvApi };
 }
-interface ViewContext { viewId: string | null; setTitle?: (title: string) => void }
+interface ViewContext {
+  viewId: string | null;
+  setTitle?: (title: string) => void;
+  // 복원 seam(B3) — 복원 마운트면 setRestoreState 로 기록했던 상태. 새 뷰는 null.
+  restore?: { cwd: string | null; state: unknown } | null;
+  // 관찰 상태 보고(B3) — 뷰 레코드 영속. kv 에 viewId 키 영속 금지(재사용 충돌).
+  setRestoreState?: (state: unknown) => void;
+}
 interface ViewProvider { mount(container: HTMLElement, ctx: ViewContext): void; unmount?(container: HTMLElement): void }
 interface PluginContext { app: PluginApi; subscriptions: { push(d: Disposable): void } }
 
@@ -79,6 +86,15 @@ const lc = createLifecycle({ storagePrefix: "soksak-offscreen" });
 
 export function activate(ctx: PluginContext): void {
   const { app } = ctx;
+
+  // 레거시 vurl 원장 제거 — B3 restore.state 로 이관 완료. 원장은 죽은 뷰의 잔재를 남겨
+  // 재사용 viewId 와 충돌했으므로(실측: 새 탭이 유령 URL 로 시작) 흡수 없이 폐기한다.
+  if (app.data) {
+    void app.data.kv
+      .keys("vurl:")
+      .then((ks) => { for (const k of ks) void app.data!.kv.delete(k); })
+      .catch(() => {});
+  }
 
   // ── 사이드카 채널(지연 단일 open) ──
   let handleP: Promise<SidecarHandle> | null = null;
@@ -320,16 +336,16 @@ export function activate(ctx: PluginContext): void {
         currentUrl = u;
         tb.setUrl(u);
         tb.setBookmarked(bookmarks.has(u));
-        if (app.data && u && u !== "about:blank") void app.data.kv.set(`vurl:${viewId}`, u);
+        // 복원용 URL 영속(B3 restore.state) — 뷰 레코드에 실려 뷰와 수명을 같이한다.
+        // 플러그인 kv(vurl:viewId) 영속은 폐기 — viewId 재사용이 죽은 뷰의 잔재를 유입시킨다.
+        if (u && u !== "about:blank") vctx.setRestoreState?.({ url: u });
       }
 
-      // ── 시작 URL 우선순위: pending → 복원(vurl) → homeUrl → about:blank ──
-      async function startUrl(): Promise<string> {
+      // ── 시작 URL 우선순위: pending → 복원(B3 restore.state) → homeUrl → about:blank ──
+      function startUrl(): string {
         if (pendingUrl) { const u = pendingUrl; pendingUrl = null; return normalizeUrl(u); }
-        if (app.data) {
-          const saved = (await app.data.kv.get(`vurl:${viewId}`)) as string | null;
-          if (saved) return normalizeUrl(saved);
-        }
+        const rs = vctx.restore?.state as { url?: string } | null | undefined;
+        if (typeof rs?.url === "string" && rs.url) return normalizeUrl(rs.url);
         return normalizeUrl(String(app.settings?.get("homeUrl") ?? "https://example.com"));
       }
 
@@ -385,10 +401,10 @@ export function activate(ctx: PluginContext): void {
         if (priorId != null) {
           // 재부착 — 엔진 child 는 살아있다(창 세션 동안 id 유효). create 없이 재부착만 한다.
           id = priorId;
-          const saved = app.data ? ((await app.data.kv.get(`vurl:${viewId}`)) as string | null) : null;
-          if (saved) { currentUrl = saved; tb.setUrl(saved); }
+          const rs = vctx.restore?.state as { url?: string } | null | undefined;
+          if (typeof rs?.url === "string" && rs.url) { currentUrl = rs.url; tb.setUrl(rs.url); }
         } else {
-          const first = await startUrl();
+          const first = startUrl();
           const r = measureRect(cell);
           const out = await send({ type: "create", mode: "offscreen", scale: window.devicePixelRatio || 1, x: r.x, y: r.y, w: r.w, h: r.h, url: first });
           const created = out && typeof out.id === "number" ? (out.id as number) : null;
