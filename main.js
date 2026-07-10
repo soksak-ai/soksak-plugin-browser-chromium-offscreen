@@ -8,6 +8,7 @@ function normalizeUrl(raw) {
 }
 
 // ../../../ai/cli/soksak-browser-kit/src/nav-state.ts
+var initialNavState = { loading: false, canBack: false, canForward: false };
 function renderNavState(s) {
   return {
     reloadGlyph: s.loading ? "\u2715" : "\u27F3",
@@ -244,6 +245,93 @@ function forwardInput(container, send) {
   };
 }
 
+// ../../../ai/cli/soksak-browser-kit/src/toolbar.ts
+function btn(node, label, title) {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.setAttribute("data-node", node);
+  b.textContent = label;
+  b.title = title;
+  b.style.cssText = "flex:0 0 auto;width:30px;height:30px;border-radius:6px;border:0;background:var(--color-background,#111);color:var(--color-text,#eee);font:15px system-ui;cursor:pointer";
+  return b;
+}
+function createBrowserToolbar(container, cb) {
+  const bar = document.createElement("div");
+  bar.setAttribute("data-node", "toolbar");
+  bar.style.cssText = "position:relative;display:flex;gap:4px;padding:6px;flex:0 0 auto;align-items:center;background:var(--color-background-soft,#222)";
+  const back = btn("back", "\u2039", "\uB4A4\uB85C");
+  const forward = btn("forward", "\u203A", "\uC55E\uC73C\uB85C");
+  const reload = btn("reload", "\u27F3", "\uC0C8\uB85C\uACE0\uCE68");
+  const home = btn("home", "\u2302", "\uD648");
+  const url = document.createElement("input");
+  url.setAttribute("data-node", "urlbar");
+  url.type = "text";
+  url.placeholder = "URL \uB610\uB294 \uAC80\uC0C9\uC5B4";
+  url.style.cssText = "flex:1 1 auto;padding:6px 10px;border-radius:6px;border:1px solid var(--color-border,#444);background:var(--color-background,#111);color:var(--color-text,#eee);font:13px system-ui";
+  const go = btn("go", "\u21B5", "\uC774\uB3D9");
+  go.style.background = "var(--color-accent,#3b82f6)";
+  go.style.color = "#fff";
+  const star = btn("bookmark", "\u2606", "\uBD81\uB9C8\uD06C");
+  const extraSlot = document.createElement("div");
+  extraSlot.setAttribute("data-node", "extra");
+  extraSlot.style.cssText = "display:flex;gap:4px;flex:0 0 auto;align-items:center";
+  const progress = document.createElement("div");
+  progress.setAttribute("data-node", "progress");
+  progress.style.cssText = "position:absolute;left:0;bottom:0;height:2px;width:0;background:var(--color-accent,#3b82f6);transition:width .25s ease-out;opacity:0";
+  bar.append(back, forward, reload, home, url, go, star, extraSlot, progress);
+  container.appendChild(bar);
+  let nav = initialNavState;
+  const apply = () => {
+    const r = renderNavState(nav);
+    reload.textContent = r.reloadGlyph;
+    reload.title = r.reloadAction === "stop" ? "\uC815\uC9C0" : "\uC0C8\uB85C\uACE0\uCE68";
+    progress.style.opacity = r.progressVisible ? "1" : "0";
+    progress.style.width = `${r.progressWidth}%`;
+    back.style.opacity = r.backEnabled ? "1" : "0.35";
+    forward.style.opacity = r.forwardEnabled ? "1" : "0.35";
+  };
+  apply();
+  back.addEventListener("click", () => {
+    if (renderNavState(nav).backEnabled) cb.onBack();
+  });
+  forward.addEventListener("click", () => {
+    if (renderNavState(nav).forwardEnabled) cb.onForward();
+  });
+  reload.addEventListener("click", () => {
+    if (renderNavState(nav).reloadAction === "stop") cb.onStop();
+    else cb.onReload();
+  });
+  home.addEventListener("click", () => cb.onHome());
+  go.addEventListener("click", () => cb.onNavigate(url.value));
+  url.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.isComposing) {
+      cb.onNavigate(url.value);
+      url.blur();
+    }
+  });
+  star.addEventListener("click", () => cb.onBookmarkToggle());
+  return {
+    root: bar,
+    extraSlot,
+    setUrl(u) {
+      if (document.activeElement !== url) url.value = u;
+    },
+    getInput() {
+      return url.value;
+    },
+    setNavState(s) {
+      nav = s;
+      apply();
+    },
+    setBookmarked(on) {
+      star.textContent = on ? "\u2605" : "\u2606";
+    },
+    dispose() {
+      bar.remove();
+    }
+  };
+}
+
 // src/plugin-entry.ts
 function measureRect(el) {
   const r = el.getBoundingClientRect();
@@ -430,54 +518,50 @@ function activate(ctx) {
       views.get(viewId)?.teardown();
       container.replaceChildren();
       container.style.cssText = "position:absolute;inset:0;display:flex;flex-direction:column;background:transparent";
-      const bar = document.createElement("div");
-      bar.style.cssText = "display:flex;gap:4px;padding:6px;flex:0 0 auto;align-items:center;background:var(--color-background-soft,#222)";
-      const mkBtn = (node, label, title) => {
-        const b = document.createElement("button");
-        b.setAttribute("data-node", node);
-        b.textContent = label;
-        b.title = title;
-        b.style.cssText = "flex:0 0 auto;width:30px;height:30px;border-radius:6px;border:0;background:var(--color-background,#111);color:var(--color-text,#eee);font:15px system-ui;cursor:pointer";
-        return b;
-      };
-      bar.style.position = "relative";
-      const backBtn = mkBtn("back", "\u2039", "\uB4A4\uB85C");
-      const fwdBtn = mkBtn("forward", "\u203A", "\uC55E\uC73C\uB85C");
-      const reloadBtn = mkBtn("reload", "\u27F3", "\uC0C8\uB85C\uACE0\uCE68");
-      const homeBtn = mkBtn("home", "\u2302", "\uD648");
-      const url = document.createElement("input");
-      url.setAttribute("data-node", "urlbar");
-      url.type = "text";
-      url.placeholder = "URL \uB610\uB294 \uAC80\uC0C9\uC5B4";
-      url.style.cssText = "flex:1 1 auto;padding:6px 10px;border-radius:6px;border:1px solid var(--color-border,#444);background:var(--color-background,#111);color:var(--color-text,#eee);font:13px system-ui";
-      const go = mkBtn("go", "\u21B5", "\uC774\uB3D9");
-      go.style.background = "var(--color-accent,#3b82f6)";
-      go.style.color = "#fff";
-      const star = mkBtn("bookmark", "\u2606", "\uBD81\uB9C8\uD06C");
-      bar.append(backBtn, fwdBtn, reloadBtn, homeBtn, url, go, star);
-      const progress = document.createElement("div");
-      progress.setAttribute("data-node", "progress");
-      progress.style.cssText = "position:absolute;left:0;bottom:0;height:2px;width:0;background:var(--color-accent,#3b82f6);transition:width .25s ease-out;opacity:0";
-      bar.appendChild(progress);
+      const homeUrl = () => normalizeUrl(String(app.settings?.get("homeUrl") ?? "https://example.com"));
+      const tb = createBrowserToolbar(container, {
+        onNavigate: (raw) => entry.navigate(normalizeUrl(raw)),
+        onBack: () => {
+          if (surfaceId != null) void send({ type: "back", id: surfaceId });
+        },
+        onForward: () => {
+          if (surfaceId != null) void send({ type: "forward", id: surfaceId });
+        },
+        onReload: () => {
+          if (surfaceId != null) void send({ type: "reload", id: surfaceId });
+        },
+        onStop: () => {
+          if (surfaceId != null) void send({ type: "stop", id: surfaceId });
+        },
+        onHome: () => entry.navigate(homeUrl()),
+        onBookmarkToggle: () => {
+          if (!app.data || !currentUrl || currentUrl === "about:blank") return;
+          if (bookmarks.has(currentUrl)) {
+            bookmarks.delete(currentUrl);
+            void app.data.kv.delete(`bm:${currentUrl}`);
+          } else {
+            const b = { url: currentUrl, title: (() => {
+              try {
+                return new URL(currentUrl).host;
+              } catch {
+                return currentUrl;
+              }
+            })() };
+            bookmarks.set(currentUrl, b);
+            void app.data.kv.set(`bm:${currentUrl}`, b);
+          }
+          tb.setBookmarked(bookmarks.has(currentUrl));
+        }
+      });
       const cell = document.createElement("div");
       cell.setAttribute("data-node", "offscreen-cell");
       cell.style.cssText = "flex:1 1 auto;position:relative;overflow:hidden;background:transparent";
-      container.append(bar, cell);
+      container.append(cell);
       let surfaceId = null;
       let currentUrl = "about:blank";
       let stopInput = null;
       let stopFollow = null;
       let disposed = false;
-      let nav = { loading: false, canBack: false, canForward: false };
-      function applyNavState() {
-        const r = renderNavState(nav);
-        reloadBtn.textContent = r.reloadGlyph;
-        reloadBtn.title = r.reloadAction === "stop" ? "\uC815\uC9C0" : "\uC0C8\uB85C\uACE0\uCE68";
-        progress.style.opacity = r.progressVisible ? "1" : "0";
-        progress.style.width = `${r.progressWidth}%`;
-        backBtn.style.opacity = r.backEnabled ? "1" : "0.35";
-        fwdBtn.style.opacity = r.forwardEnabled ? "1" : "0.35";
-      }
       const teardown = () => {
         if (disposed) return;
         disposed = true;
@@ -502,7 +586,7 @@ function activate(ctx) {
         surfaceId: null,
         getUrl: () => currentUrl,
         navigate: (u) => {
-          url.value = u;
+          tb.setUrl(u);
           currentUrl = u;
           if (surfaceId != null) void send({ type: "load", id: surfaceId, url: u });
         },
@@ -511,8 +595,8 @@ function activate(ctx) {
       views.set(viewId, entry);
       function setUrlBar(u) {
         currentUrl = u;
-        url.value = u;
-        star.textContent = bookmarks.has(u) ? "\u2605" : "\u2606";
+        tb.setUrl(u);
+        tb.setBookmarked(bookmarks.has(u));
         if (app.data && u && u !== "about:blank") void app.data.kv.set(`vurl:${viewId}`, u);
       }
       async function startUrl() {
@@ -570,43 +654,6 @@ function activate(ctx) {
           if (raf) cancelAnimationFrame(raf);
         };
       }
-      const doNav = () => entry.navigate(normalizeUrl(url.value));
-      const homeUrl = () => normalizeUrl(String(app.settings?.get("homeUrl") ?? "https://example.com"));
-      go.addEventListener("click", doNav);
-      url.addEventListener("keydown", (e) => {
-        if (e.key === "Enter" && !e.isComposing) {
-          doNav();
-          url.blur();
-        }
-      });
-      backBtn.addEventListener("click", () => {
-        if (nav.canBack && surfaceId != null) void send({ type: "back", id: surfaceId });
-      });
-      fwdBtn.addEventListener("click", () => {
-        if (nav.canForward && surfaceId != null) void send({ type: "forward", id: surfaceId });
-      });
-      reloadBtn.addEventListener("click", () => {
-        if (surfaceId != null) void send({ type: renderNavState(nav).reloadAction, id: surfaceId });
-      });
-      homeBtn.addEventListener("click", () => entry.navigate(homeUrl()));
-      star.addEventListener("click", () => {
-        if (!app.data || !currentUrl || currentUrl === "about:blank") return;
-        if (bookmarks.has(currentUrl)) {
-          bookmarks.delete(currentUrl);
-          void app.data.kv.delete(`bm:${currentUrl}`);
-        } else {
-          const b = { url: currentUrl, title: (() => {
-            try {
-              return new URL(currentUrl).host;
-            } catch {
-              return currentUrl;
-            }
-          })() };
-          bookmarks.set(currentUrl, b);
-          void app.data.kv.set(`bm:${currentUrl}`, b);
-        }
-        star.textContent = bookmarks.has(currentUrl) ? "\u2605" : "\u2606";
-      });
       const priorId = lc.byviewGet(viewId);
       if (priorId != null) lc.reattach(priorId);
       void (async () => {
@@ -616,7 +663,7 @@ function activate(ctx) {
           const saved = app.data ? await app.data.kv.get(`vurl:${viewId}`) : null;
           if (saved) {
             currentUrl = saved;
-            url.value = saved;
+            tb.setUrl(saved);
           }
         } else {
           const first = await startUrl();
@@ -659,8 +706,7 @@ function activate(ctx) {
         });
         h.on("loading", (p) => {
           if (p.id !== id) return;
-          nav = { loading: !!p.loading, canBack: !!p.canBack, canForward: !!p.canForward };
-          applyNavState();
+          tb.setNavState({ loading: !!p.loading, canBack: !!p.canBack, canForward: !!p.canForward });
         });
         h.on("popup-url", (p) => {
           if (p.id !== id || typeof p.url !== "string") return;

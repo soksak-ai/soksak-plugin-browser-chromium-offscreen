@@ -3,8 +3,7 @@
 // mode:"offscreen" 으로 연다: 엔진이 창 없이 그려 공유 텍스처를 코어 소유 레이어에 present 하고,
 // 이 뷰의 DOM 셀이 모든 입력을 받아 프로토콜(mouse/wheel/key/ime)로 포워딩한다. 코어는 메시지 의미를
 // 모른다(맹목 relay) — 결합은 매니페스트 sidecars[] + 메시지뿐(약결합). eval 없음.
-import { forwardInput, normalizeUrl, createLifecycle, reclaimTargets, renderNavState } from "soksak-browser-kit";
-import type { NavState } from "soksak-browser-kit";
+import { forwardInput, normalizeUrl, createLifecycle, reclaimTargets, createBrowserToolbar } from "soksak-browser-kit";
 
 // ── 앱 API 표면(코어 PluginApi 부분집합) ────────────────────────────────────────────────────
 interface SidecarHandle {
@@ -258,60 +257,36 @@ export function activate(ctx: PluginContext): void {
 
       container.style.cssText = "position:absolute;inset:0;display:flex;flex-direction:column;background:transparent";
 
-      // ── 툴바 ──
-      const bar = document.createElement("div");
-      bar.style.cssText = "display:flex;gap:4px;padding:6px;flex:0 0 auto;align-items:center;background:var(--color-background-soft,#222)";
-      const mkBtn = (node: string, label: string, title: string): HTMLButtonElement => {
-        const b = document.createElement("button");
-        b.setAttribute("data-node", node);
-        b.textContent = label;
-        b.title = title;
-        b.style.cssText = "flex:0 0 auto;width:30px;height:30px;border-radius:6px;border:0;background:var(--color-background,#111);color:var(--color-text,#eee);font:15px system-ui;cursor:pointer";
-        return b;
-      };
-      bar.style.position = "relative"; // 진행 바 앵커
-      const backBtn = mkBtn("back", "‹", "뒤로");
-      const fwdBtn = mkBtn("forward", "›", "앞으로");
-      const reloadBtn = mkBtn("reload", "⟳", "새로고침"); // 로딩 중 ✕(정지)로 토글
-      const homeBtn = mkBtn("home", "⌂", "홈");
-      const url = document.createElement("input");
-      url.setAttribute("data-node", "urlbar");
-      url.type = "text";
-      url.placeholder = "URL 또는 검색어";
-      url.style.cssText = "flex:1 1 auto;padding:6px 10px;border-radius:6px;border:1px solid var(--color-border,#444);background:var(--color-background,#111);color:var(--color-text,#eee);font:13px system-ui";
-      const go = mkBtn("go", "↵", "이동");
-      go.style.background = "var(--color-accent,#3b82f6)";
-      go.style.color = "#fff";
-      const star = mkBtn("bookmark", "☆", "북마크");
-      bar.append(backBtn, fwdBtn, reloadBtn, homeBtn, url, go, star);
-      // 로딩 진행 바(불확정) — 툴바 하단. 엔진 loading 이벤트로 표시/숨김.
-      const progress = document.createElement("div");
-      progress.setAttribute("data-node", "progress");
-      progress.style.cssText = "position:absolute;left:0;bottom:0;height:2px;width:0;background:var(--color-accent,#3b82f6);transition:width .25s ease-out;opacity:0";
-      bar.appendChild(progress);
+      const homeUrl = (): string => normalizeUrl(String(app.settings?.get("homeUrl") ?? "https://example.com"));
+      // ── 툴바 — 공용 구현(soksak-browser-kit createBrowserToolbar): 세 브라우저 동일 DOM·노드·외형 ──
+      const tb = createBrowserToolbar(container, {
+        onNavigate: (raw) => entry.navigate(normalizeUrl(raw)),
+        onBack: () => { if (surfaceId != null) void send({ type: "back", id: surfaceId }); },
+        onForward: () => { if (surfaceId != null) void send({ type: "forward", id: surfaceId }); },
+        onReload: () => { if (surfaceId != null) void send({ type: "reload", id: surfaceId }); },
+        onStop: () => { if (surfaceId != null) void send({ type: "stop", id: surfaceId }); },
+        onHome: () => entry.navigate(homeUrl()),
+        onBookmarkToggle: () => {
+          if (!app.data || !currentUrl || currentUrl === "about:blank") return;
+          // 낙관적 즉시 반영 — 공유 map·글리프를 지금 갱신하고 kv 는 비동기로 뒤따른다(kv.watch 재조정은 멱등).
+          if (bookmarks.has(currentUrl)) { bookmarks.delete(currentUrl); void app.data.kv.delete(`bm:${currentUrl}`); }
+          else { const b = { url: currentUrl, title: (() => { try { return new URL(currentUrl).host; } catch { return currentUrl; } })() }; bookmarks.set(currentUrl, b); void app.data.kv.set(`bm:${currentUrl}`, b); }
+          tb.setBookmarked(bookmarks.has(currentUrl));
+        },
+      });
 
       // ── 투명 홀 셀 ──
       const cell = document.createElement("div");
       cell.setAttribute("data-node", "offscreen-cell");
       cell.style.cssText = "flex:1 1 auto;position:relative;overflow:hidden;background:transparent";
-      container.append(bar, cell);
+      container.append(cell);
 
       let surfaceId: number | null = null;
       let currentUrl = "about:blank";
       let stopInput: (() => void) | null = null;
       let stopFollow: (() => void) | null = null;
       let disposed = false;
-      // 툴바 내비 상태 — 판정은 kit renderNavState 가 단일 진실(세 브라우저 공유), 여기는 DOM 반영만.
-      let nav: NavState = { loading: false, canBack: false, canForward: false };
-      function applyNavState(): void {
-        const r = renderNavState(nav);
-        reloadBtn.textContent = r.reloadGlyph;
-        reloadBtn.title = r.reloadAction === "stop" ? "정지" : "새로고침";
-        progress.style.opacity = r.progressVisible ? "1" : "0";
-        progress.style.width = `${r.progressWidth}%`;
-        backBtn.style.opacity = r.backEnabled ? "1" : "0.35";
-        fwdBtn.style.opacity = r.forwardEnabled ? "1" : "0.35";
-      }
+
 
       const teardown = (): void => {
         if (disposed) return;
@@ -336,15 +311,15 @@ export function activate(ctx: PluginContext): void {
         viewId,
         surfaceId: null,
         getUrl: () => currentUrl,
-        navigate: (u) => { url.value = u; currentUrl = u; if (surfaceId != null) void send({ type: "load", id: surfaceId, url: u }); },
+        navigate: (u) => { tb.setUrl(u); currentUrl = u; if (surfaceId != null) void send({ type: "load", id: surfaceId, url: u }); },
         teardown,
       };
       views.set(viewId, entry);
 
       function setUrlBar(u: string): void {
         currentUrl = u;
-        url.value = u;
-        star.textContent = bookmarks.has(u) ? "★" : "☆";
+        tb.setUrl(u);
+        tb.setBookmarked(bookmarks.has(u));
         if (app.data && u && u !== "about:blank") void app.data.kv.set(`vurl:${viewId}`, u);
       }
 
@@ -392,25 +367,6 @@ export function activate(ctx: PluginContext): void {
         return () => { ro.disconnect(); io.disconnect(); window.removeEventListener("resize", arm); if (raf) cancelAnimationFrame(raf); };
       }
 
-      // ── 툴바 배선 ──
-      const doNav = (): void => entry.navigate(normalizeUrl(url.value));
-      const homeUrl = (): string => normalizeUrl(String(app.settings?.get("homeUrl") ?? "https://example.com"));
-      go.addEventListener("click", doNav);
-      url.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.isComposing) { doNav(); url.blur(); } });
-      backBtn.addEventListener("click", () => { if (nav.canBack && surfaceId != null) void send({ type: "back", id: surfaceId }); });
-      fwdBtn.addEventListener("click", () => { if (nav.canForward && surfaceId != null) void send({ type: "forward", id: surfaceId }); });
-      // reload 버튼은 로딩 중이면 정지(stop), 아니면 새로고침 — 표준 브라우저 토글.
-      reloadBtn.addEventListener("click", () => { if (surfaceId != null) void send({ type: renderNavState(nav).reloadAction, id: surfaceId }); });
-      homeBtn.addEventListener("click", () => entry.navigate(homeUrl()));
-      star.addEventListener("click", () => {
-        if (!app.data || !currentUrl || currentUrl === "about:blank") return;
-        // 낙관적 즉시 반영 — 공유 map·글리프를 지금 갱신하고 kv 는 비동기로 뒤따른다. kv.watch 의
-        // loadBookmarks 가 나중에 재조정해도 멱등(같은 결과)이라 깜빡임 없다.
-        if (bookmarks.has(currentUrl)) { bookmarks.delete(currentUrl); void app.data.kv.delete(`bm:${currentUrl}`); }
-        else { const b = { url: currentUrl, title: (() => { try { return new URL(currentUrl).host; } catch { return currentUrl; } })() }; bookmarks.set(currentUrl, b); void app.data.kv.set(`bm:${currentUrl}`, b); }
-        star.textContent = bookmarks.has(currentUrl) ? "★" : "☆";
-      });
-
       // ── 재부착 후보 — 이전 인스턴스/이전 mount 가 이 viewId 로 만든 서피스(페이지 상태 보존).
       // 디바운스 중인 close 가 있으면 취소하고 재사용한다(remount = 재부모화·재적재).
       const priorId = lc.byviewGet(viewId);
@@ -423,7 +379,7 @@ export function activate(ctx: PluginContext): void {
           // 재부착 — 엔진 child 는 살아있다(창 세션 동안 id 유효). create 없이 재부착만 한다.
           id = priorId;
           const saved = app.data ? ((await app.data.kv.get(`vurl:${viewId}`)) as string | null) : null;
-          if (saved) { currentUrl = saved; url.value = saved; }
+          if (saved) { currentUrl = saved; tb.setUrl(saved); }
         } else {
           const first = await startUrl();
           const r = measureRect(cell);
@@ -455,8 +411,7 @@ export function activate(ctx: PluginContext): void {
         h.on("cursor", (p) => { if (p.id === id) cell.style.cursor = String(p.type ?? "default"); });
         h.on("loading", (p) => {
           if (p.id !== id) return;
-          nav = { loading: !!p.loading, canBack: !!p.canBack, canForward: !!p.canForward };
-          applyNavState();
+          tb.setNavState({ loading: !!p.loading, canBack: !!p.canBack, canForward: !!p.canForward });
         });
         // 새 링크(target=_blank/window.open) — tab 모드에서 엔진이 popup-url 로 배달. 새 offscreen 탭으로 연다.
         h.on("popup-url", (p) => {
