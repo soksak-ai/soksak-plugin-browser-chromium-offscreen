@@ -10,7 +10,7 @@ function forwardInput(container, send) {
   const proxy = document.createElement("input");
   proxy.type = "text";
   proxy.setAttribute("aria-hidden", "true");
-  proxy.style.cssText = "position:absolute;left:0;top:0;width:1px;height:1px;opacity:0;border:0;padding:0;pointer-events:none;";
+  proxy.style.cssText = "position:absolute;left:0;top:0;width:2em;height:1.4em;border:0;padding:0;margin:0;background:transparent;color:transparent;caret-color:transparent;outline:none;pointer-events:none;";
   container.appendChild(proxy);
   let moveRaf = 0;
   let lastMove = null;
@@ -58,7 +58,32 @@ function forwardInput(container, send) {
     send({ type: "wheel", x: p.x, y: p.y, dx: Math.round(e.deltaX), dy: Math.round(e.deltaY) });
   };
   const onContext = (e) => e.preventDefault();
+  let composing = false;
+  let pending = "";
+  const isHangul = (s) => {
+    const cp = s ? s.codePointAt(0) ?? 0 : 0;
+    return cp >= 4352 && cp <= 4607 || cp >= 12592 && cp <= 12687 || cp >= 44032 && cp <= 55215 || cp >= 43360 && cp <= 43391 || cp >= 55216 && cp <= 55295;
+  };
+  const setPreedit = (text) => {
+    if (!composing && text.length > 0) send({ type: "focus" });
+    composing = text.length > 0;
+    pending = text;
+    send({ type: "ime", kind: "set", text, caret: text.length });
+  };
+  const commitPending = () => {
+    if (!composing) return;
+    const t = pending;
+    composing = false;
+    pending = "";
+    if (t) send({ type: "ime", kind: "commit", text: t });
+  };
+  const clearComposition = () => {
+    composing = false;
+    pending = "";
+    send({ type: "ime", kind: "set", text: "", caret: 0 });
+  };
   const onKeyDown = (e) => {
+    if (composing && !e.isComposing && e.keyCode !== 229) commitPending();
     if (e.isComposing || e.keyCode === 229) return;
     e.preventDefault();
     const mods = modsOf(e);
@@ -71,20 +96,38 @@ function forwardInput(container, send) {
     if (e.isComposing || e.keyCode === 229) return;
     send({ type: "key", kind: "up", code: e.keyCode, mods: modsOf(e) });
   };
-  const onCompStart = () => {
-    send({ type: "ime", kind: "set", text: "", caret: 0 });
+  const onInput = (e) => {
+    const ie = e;
+    const data = ie.data ?? "";
+    if (ie.inputType === "insertReplacementText") {
+      if (data) setPreedit(data);
+      else clearComposition();
+      return;
+    }
+    if (ie.inputType === "insertText" && data && isHangul(data)) {
+      if (composing) commitPending();
+      setPreedit(data);
+      return;
+    }
+    if (ie.inputType === "deleteContentBackward" && composing) {
+      clearComposition();
+      return;
+    }
   };
   const onCompUpdate = (e) => {
-    const text = e.data ?? "";
-    send({ type: "ime", kind: "set", text, caret: text.length });
+    setPreedit(e.data ?? "");
   };
   const onCompEnd = (e) => {
     const text = e.data ?? "";
+    composing = false;
+    pending = "";
     proxy.value = "";
     if (text) send({ type: "ime", kind: "commit", text });
     else send({ type: "ime", kind: "cancel" });
   };
   const onBlur = () => {
+    commitPending();
+    proxy.value = "";
     send({ type: "ime", kind: "finish" });
   };
   container.addEventListener("mousemove", onMove);
@@ -94,7 +137,7 @@ function forwardInput(container, send) {
   container.addEventListener("contextmenu", onContext);
   proxy.addEventListener("keydown", onKeyDown);
   proxy.addEventListener("keyup", onKeyUp);
-  proxy.addEventListener("compositionstart", onCompStart);
+  proxy.addEventListener("input", onInput);
   proxy.addEventListener("compositionupdate", onCompUpdate);
   proxy.addEventListener("compositionend", onCompEnd);
   proxy.addEventListener("blur", onBlur);
@@ -134,6 +177,47 @@ function resolveEntry(viewId) {
   return first.done ? null : first.value;
 }
 var pendingUrl = null;
+var LEDGER_KEY = "soksak-offscreen-created";
+var BYVIEW_KEY = "soksak-offscreen-byview";
+var CLOSE_DEBOUNCE_MS = 800;
+function ssRead(key, fallback) {
+  try {
+    const raw = sessionStorage.getItem(key);
+    return raw ? JSON.parse(raw) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+function ssWrite(key, value) {
+  try {
+    sessionStorage.setItem(key, JSON.stringify(value));
+  } catch {
+  }
+}
+function ledgerRead() {
+  const v = ssRead(LEDGER_KEY, []);
+  return Array.isArray(v) ? v.filter((x) => typeof x === "number") : [];
+}
+function ledgerAdd(id) {
+  const l = ledgerRead();
+  if (!l.includes(id)) ssWrite(LEDGER_KEY, [...l, id]);
+}
+function ledgerRemove(id) {
+  ssWrite(LEDGER_KEY, ledgerRead().filter((x) => x !== id));
+}
+function byviewRead() {
+  const v = ssRead(BYVIEW_KEY, {});
+  return v && typeof v === "object" && !Array.isArray(v) ? v : {};
+}
+function byviewSet(viewId, id) {
+  ssWrite(BYVIEW_KEY, { ...byviewRead(), [viewId]: id });
+}
+function byviewDelete(viewId) {
+  const m = byviewRead();
+  delete m[viewId];
+  ssWrite(BYVIEW_KEY, m);
+}
+var pendingClose = /* @__PURE__ */ new Map();
 function activate(ctx) {
   const { app } = ctx;
   let handleP = null;
@@ -161,6 +245,30 @@ function activate(ctx) {
       if (typeof id === "string") activeViewId = id;
     })
   );
+  const RECONCILE_GRACE_MS = 4e3;
+  const reconcileTimer = setTimeout(() => {
+    void (async () => {
+      const stats = await send({ type: "stats" });
+      const alive = new Set((stats?.ids ?? []).map(Number));
+      const claimed = /* @__PURE__ */ new Set([
+        ...[...views.values()].map((v) => v.surfaceId).filter((x) => x != null),
+        ...Object.values(byviewRead()),
+        ...pendingClose.keys()
+      ]);
+      for (const id of ledgerRead()) {
+        if (!alive.has(id)) {
+          ledgerRemove(id);
+          continue;
+        }
+        if (claimed.has(id)) continue;
+        console.warn(`[chromium-offscreen] \uC720\uB839 \uC11C\uD53C\uC2A4 \uD68C\uC218: id=${id}`);
+        void send({ type: "close", id }).then((r) => {
+          if (r && r.ok) ledgerRemove(id);
+        });
+      }
+    })();
+  }, RECONCILE_GRACE_MS);
+  ctx.subscriptions.push({ dispose: () => clearTimeout(reconcileTimer) });
   if (app.commands) {
     const reg = (name, spec) => ctx.subscriptions.push(app.commands.register(name, spec));
     reg("ping", {
@@ -246,6 +354,8 @@ function activate(ctx) {
       handler: async () => ({
         ok: true,
         ids: [...views.values()].map((v) => ({ viewId: v.viewId, surfaceId: v.surfaceId, url: v.getUrl() })),
+        ledger: ledgerRead(),
+        // 유령 방지 장부 스냅샷 — chromium 어댑터 stats 와 동형 진단
         engine: await send({ type: "stats" })
       })
     });
@@ -331,7 +441,18 @@ function activate(ctx) {
         if (activeViewId === viewId) activeViewId = null;
         stopInput?.();
         stopFollow?.();
-        if (surfaceId != null) void send({ type: "close", id: surfaceId });
+        if (surfaceId != null) {
+          const id = surfaceId;
+          void send({ type: "hidden", id, hidden: true });
+          const t = setTimeout(() => {
+            pendingClose.delete(id);
+            byviewDelete(viewId);
+            void send({ type: "close", id }).then((r) => {
+              if (r && r.ok) ledgerRemove(id);
+            });
+          }, CLOSE_DEBOUNCE_MS);
+          pendingClose.set(id, t);
+        }
         surfaceId = null;
       };
       const entry = {
@@ -444,22 +565,49 @@ function activate(ctx) {
         }
         star.textContent = bookmarks.has(currentUrl) ? "\u2605" : "\u2606";
       });
+      const priorId = byviewRead()[viewId];
+      if (priorId != null) {
+        const t = pendingClose.get(priorId);
+        if (t) {
+          clearTimeout(t);
+          pendingClose.delete(priorId);
+        }
+      }
       void (async () => {
-        const first = await startUrl();
-        const r = measureRect(cell);
-        const out = await send({ type: "create", mode: "offscreen", scale: window.devicePixelRatio || 1, x: r.x, y: r.y, w: r.w, h: r.h, url: first });
-        const id = out && typeof out.id === "number" ? out.id : null;
-        if (id == null) {
-          cell.textContent = "\uC5D4\uC9C4 \uC11C\uD53C\uC2A4 \uC0DD\uC131 \uC2E4\uD328";
-          return;
+        let id;
+        if (priorId != null) {
+          id = priorId;
+          const saved = app.data ? await app.data.kv.get(`vurl:${viewId}`) : null;
+          if (saved) {
+            currentUrl = saved;
+            url.value = saved;
+          }
+        } else {
+          const first = await startUrl();
+          const r = measureRect(cell);
+          const out = await send({ type: "create", mode: "offscreen", scale: window.devicePixelRatio || 1, x: r.x, y: r.y, w: r.w, h: r.h, url: first });
+          const created = out && typeof out.id === "number" ? out.id : null;
+          if (created == null) {
+            cell.textContent = "\uC5D4\uC9C4 \uC11C\uD53C\uC2A4 \uC0DD\uC131 \uC2E4\uD328";
+            return;
+          }
+          id = created;
+          ledgerAdd(id);
+          byviewSet(viewId, id);
+          setUrlBar(first);
         }
         if (disposed || views.get(viewId) !== entry) {
-          void send({ type: "close", id });
+          if (priorId == null) {
+            void send({ type: "close", id }).then((r2) => {
+              if (r2 && r2.ok) ledgerRemove(id);
+            });
+            byviewDelete(viewId);
+          }
           return;
         }
         surfaceId = id;
         entry.surfaceId = id;
-        setUrlBar(first);
+        if (priorId != null) void send({ type: "hidden", id, hidden: false });
         void send({ type: "popup-mode", asWindow: newWindowMode() });
         stopFollow = follow(id);
         stopInput = forwardInput(cell, (m) => void send({ ...m, id }));

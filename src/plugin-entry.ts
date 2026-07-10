@@ -80,6 +80,59 @@ function resolveEntry(viewId?: string): ViewEntry | null {
 // 새 탭이 열 URL(open 커맨드 / popup-url 이 set → 다음 mount 가 1회 소비).
 let pendingUrl: string | null = null;
 
+// ── 재적재 생존 수명주기(창-스코프 영속) — browser-chromium 어댑터의 확립된 규칙을 동일 적용 ──
+// 앱 웹뷰 reload(vite HMR/dev.load)는 deactivate 없이 플러그인 JS 를 통째로 죽이고, deactivate 경로도
+// 채널이 먼저 죽어(실측: closeEnter 무증가) 죽는 인스턴스는 엔진에 아무것도 보낼 수 없다. 규칙:
+//   1. 서피스는 인스턴스보다 오래 산다 — 다음 인스턴스가 입양 지도(viewId→surfaceId)로 재부착한다
+//      (페이지 상태 보존 — chromium "keep pages across plugin reloads" 와 동일 의도).
+//   2. 생성 장부(created)는 close 가 엔진에서 확인된 때에만 지운다 — 실패한 close 가 증거를 못 지운다.
+//   3. unmount 의 close 는 디바운스 — remount(재부모화/재적재 입양)가 취소하고 재사용한다.
+//   4. activate 후 reconcile 이 "장부에 있고 엔진에 살아있는데 아무도 안 잡은" id 만 회수한다.
+// sessionStorage 는 창별 + webview reload 생존 + 앱 재시작 시 초기화 — 엔진 child 수명과 정확히 일치.
+const LEDGER_KEY = "soksak-offscreen-created";
+const BYVIEW_KEY = "soksak-offscreen-byview";
+const CLOSE_DEBOUNCE_MS = 800; // remount(unmount→즉시 mount)가 취소할 시간
+function ssRead<T>(key: string, fallback: T): T {
+  try {
+    const raw = sessionStorage.getItem(key);
+    return raw ? (JSON.parse(raw) as T) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+function ssWrite(key: string, value: unknown): void {
+  try {
+    sessionStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    /* sessionStorage 불가 환경 — 영속 없이도 기본 동작은 유지 */
+  }
+}
+function ledgerRead(): number[] {
+  const v = ssRead<unknown>(LEDGER_KEY, []);
+  return Array.isArray(v) ? v.filter((x): x is number => typeof x === "number") : [];
+}
+function ledgerAdd(id: number): void {
+  const l = ledgerRead();
+  if (!l.includes(id)) ssWrite(LEDGER_KEY, [...l, id]);
+}
+function ledgerRemove(id: number): void {
+  ssWrite(LEDGER_KEY, ledgerRead().filter((x) => x !== id));
+}
+function byviewRead(): Record<string, number> {
+  const v = ssRead<unknown>(BYVIEW_KEY, {});
+  return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, number>) : {};
+}
+function byviewSet(viewId: string, id: number): void {
+  ssWrite(BYVIEW_KEY, { ...byviewRead(), [viewId]: id });
+}
+function byviewDelete(viewId: string): void {
+  const m = byviewRead();
+  delete m[viewId];
+  ssWrite(BYVIEW_KEY, m);
+}
+// 디바운스 중인 close 타이머 — remount 입양이 취소한다.
+const pendingClose = new Map<number, ReturnType<typeof setTimeout>>();
+
 export function activate(ctx: PluginContext): void {
   const { app } = ctx;
 
@@ -111,6 +164,29 @@ export function activate(ctx: PluginContext): void {
       if (typeof id === "string") activeViewId = id;
     }),
   );
+
+  // ── 유령 회수(reconcile) — 장부에 있고 엔진에 살아있는데 아무도 안 잡은 id 만 회수한다.
+  // "잡음" = 이번 인스턴스의 뷰가 소유 / 입양 지도에 대기(remount 가 곧 재부착) / close 디바운스 중.
+  // grace 는 복원 remount 의 비동기 재부착이 끝날 시간(너무 일찍 회수하면 살아있는 서피스를 잘못 닫는다).
+  const RECONCILE_GRACE_MS = 4000;
+  const reconcileTimer = setTimeout(() => {
+    void (async () => {
+      const stats = await send({ type: "stats" });
+      const alive = new Set(((stats?.ids as number[] | undefined) ?? []).map(Number));
+      const claimed = new Set<number>([
+        ...[...views.values()].map((v) => v.surfaceId).filter((x): x is number => x != null),
+        ...Object.values(byviewRead()),
+        ...pendingClose.keys(),
+      ]);
+      for (const id of ledgerRead()) {
+        if (!alive.has(id)) { ledgerRemove(id); continue; } // 엔진에 이미 없음 — 장부만 청소
+        if (claimed.has(id)) continue;
+        console.warn(`[chromium-offscreen] 유령 서피스 회수: id=${id}`);
+        void send({ type: "close", id }).then((r) => { if (r && (r as { ok?: boolean }).ok) ledgerRemove(id); });
+      }
+    })();
+  }, RECONCILE_GRACE_MS);
+  ctx.subscriptions.push({ dispose: () => clearTimeout(reconcileTimer) });
 
   // ── 커맨드 등록(CLI/MCP — chromium 과 동형) ──
   if (app.commands) {
@@ -199,6 +275,7 @@ export function activate(ctx: PluginContext): void {
       handler: async () => ({
         ok: true,
         ids: [...views.values()].map((v) => ({ viewId: v.viewId, surfaceId: v.surfaceId, url: v.getUrl() })),
+        ledger: ledgerRead(), // 유령 방지 장부 스냅샷 — chromium 어댑터 stats 와 동형 진단
         engine: await send({ type: "stats" }),
       }),
     });
@@ -299,7 +376,18 @@ export function activate(ctx: PluginContext): void {
         if (activeViewId === viewId) activeViewId = null;
         stopInput?.();
         stopFollow?.();
-        if (surfaceId != null) void send({ type: "close", id: surfaceId });
+        if (surfaceId != null) {
+          const id = surfaceId;
+          // 즉시 숨김(탭은 닫힌 확정 상태 — 서피스가 화면에 남으면 안 된다) 후 close 는 디바운스:
+          // remount(재부모화·재적재 입양)가 취소하고 재사용한다. 장부는 close 가 확인된 때에만 지운다.
+          void send({ type: "hidden", id, hidden: true });
+          const t = setTimeout(() => {
+            pendingClose.delete(id);
+            byviewDelete(viewId);
+            void send({ type: "close", id }).then((r) => { if (r && (r as { ok?: boolean }).ok) ledgerRemove(id); });
+          }, CLOSE_DEBOUNCE_MS);
+          pendingClose.set(id, t);
+        }
         surfaceId = null;
       };
       const entry: ViewEntry = {
@@ -381,19 +469,43 @@ export function activate(ctx: PluginContext): void {
         star.textContent = bookmarks.has(currentUrl) ? "★" : "☆";
       });
 
-      // ── 서피스 생성 + 이벤트 배선 ──
+      // ── 입양 후보 — 이전 인스턴스/이전 mount 가 이 viewId 로 만든 서피스(페이지 상태 보존).
+      // 디바운스 중인 close 가 있으면 취소하고 재사용한다(remount = 재부모화·재적재).
+      const priorId = byviewRead()[viewId];
+      if (priorId != null) {
+        const t = pendingClose.get(priorId);
+        if (t) { clearTimeout(t); pendingClose.delete(priorId); }
+      }
+
+      // ── 서피스 입양 또는 생성 + 이벤트 배선 ──
       void (async () => {
-        const first = await startUrl();
-        const r = measureRect(cell);
-        const out = await send({ type: "create", mode: "offscreen", scale: window.devicePixelRatio || 1, x: r.x, y: r.y, w: r.w, h: r.h, url: first });
-        const id = out && typeof out.id === "number" ? (out.id as number) : null;
-        if (id == null) { cell.textContent = "엔진 서피스 생성 실패"; return; }
-        // 생성 중 unmount(disposed) 또는 더 새 mount 가 이 뷰를 넘겨받음(map 정체성 불일치) → 즉시 닫기.
-        // 이 가드가 뷰당 서피스 1개를 보장해 스택 가림을 원천 차단한다.
-        if (disposed || views.get(viewId) !== entry) { void send({ type: "close", id }); return; }
+        let id: number;
+        if (priorId != null) {
+          // 입양 — 엔진 child 는 살아있다(창 세션 동안 id 유효). create 없이 재부착만 한다.
+          id = priorId;
+          const saved = app.data ? ((await app.data.kv.get(`vurl:${viewId}`)) as string | null) : null;
+          if (saved) { currentUrl = saved; url.value = saved; }
+        } else {
+          const first = await startUrl();
+          const r = measureRect(cell);
+          const out = await send({ type: "create", mode: "offscreen", scale: window.devicePixelRatio || 1, x: r.x, y: r.y, w: r.w, h: r.h, url: first });
+          const created = out && typeof out.id === "number" ? (out.id as number) : null;
+          if (created == null) { cell.textContent = "엔진 서피스 생성 실패"; return; }
+          id = created;
+          ledgerAdd(id); // 생성 장부 — close 확인 시 지워지고, reconcile 이 잔여를 회수
+          byviewSet(viewId, id); // 입양 지도 — 재적재 후 이 뷰가 같은 서피스를 되찾는다
+          setUrlBar(first);
+        }
+        // 생성/입양 중 unmount(disposed) 또는 더 새 mount 가 이 뷰를 넘겨받음(map 정체성 불일치) →
+        // 소유하지 않는다. 이 가드가 뷰당 서피스 1개를 보장해 스택 가림을 원천 차단한다.
+        if (disposed || views.get(viewId) !== entry) {
+          if (priorId == null) { void send({ type: "close", id }).then((r2) => { if (r2 && (r2 as { ok?: boolean }).ok) ledgerRemove(id); }); byviewDelete(viewId); }
+          return;
+        }
         surfaceId = id;
         entry.surfaceId = id;
-        setUrlBar(first);
+        // 입양된 서피스는 teardown 이 숨겨놨을 수 있다 — 재부착 시 다시 보이게.
+        if (priorId != null) void send({ type: "hidden", id, hidden: false });
         // 새 링크 라우팅 정책을 엔진에 통지(tab=팝업 취소+popup-url 이벤트 / window=엔진 네이티브 팝업).
         void send({ type: "popup-mode", asWindow: newWindowMode() });
         stopFollow = follow(id);
