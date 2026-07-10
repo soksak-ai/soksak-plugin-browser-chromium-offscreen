@@ -411,6 +411,17 @@ function domWaitForBody(selector, timeoutMs = 5e3) {
           });`;
 }
 
+// src/status.ts
+var STRINGS = {
+  loading: { en: "Loading\u2026", ko: "\uBD88\uB7EC\uC624\uB294 \uC911\u2026" },
+  error: { en: "Engine surface unavailable", ko: "\uC5D4\uC9C4 \uC11C\uD53C\uC2A4\uB97C \uB9CC\uB4E4 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4" }
+};
+function browserStatus(phase, lang) {
+  if (phase === "ready") return null;
+  const s = STRINGS[phase];
+  return { code: phase, message: lang === "ko" ? s.ko : s.en };
+}
+
 // src/plugin-entry.ts
 function measureRect(el) {
   const r = el.getBoundingClientRect();
@@ -746,6 +757,7 @@ function activate(ctx) {
       const viewId = vctx.viewId;
       if (!viewId) return;
       lastMountedViewId = viewId;
+      const reportStatus = (phase) => vctx.setStatus?.(browserStatus(phase, app.locale?.() ?? "en"));
       views.get(viewId)?.teardown();
       container.replaceChildren();
       container.style.cssText = "position:absolute;inset:0;display:flex;flex-direction:column;background:transparent";
@@ -927,6 +939,7 @@ function activate(ctx) {
           const created = out && typeof out.id === "number" ? out.id : null;
           if (created == null) {
             cell.textContent = "\uC5D4\uC9C4 \uC11C\uD53C\uC2A4 \uC0DD\uC131 \uC2E4\uD328";
+            reportStatus("error");
             return;
           }
           id = created;
@@ -949,6 +962,7 @@ function activate(ctx) {
         }
         surfaceId = id;
         entry.surfaceId = id;
+        reportStatus(prior != null ? "ready" : "loading");
         if (prior != null) void send({ type: "hidden", id, hidden: false });
         void send({ type: "popup-mode", asWindow: newWindowMode() });
         stopFollow = follow(id);
@@ -970,6 +984,7 @@ function activate(ctx) {
         h.on("loading", (p) => {
           if (p.id !== id) return;
           tb.setNavState({ loading: !!p.loading, canBack: !!p.canBack, canForward: !!p.canForward });
+          reportStatus(p.loading ? "loading" : "ready");
         });
         h.on("popup-url", (p) => {
           if (p.id !== id || typeof p.url !== "string") return;

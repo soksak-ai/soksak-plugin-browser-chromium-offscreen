@@ -17,6 +17,7 @@ import {
   domSubmitBody,
   domWaitForBody,
 } from "soksak-kit-browser-common";
+import { browserStatus, type BrowserPhase } from "./status";
 
 // ── 앱 API 표면(코어 PluginApi 부분집합) ────────────────────────────────────────────────────
 interface SidecarHandle {
@@ -44,6 +45,8 @@ interface PluginApi {
   pluginId: string;
   sidecar?: { open: (name: string) => Promise<SidecarHandle> };
   settings?: { get: (key: string) => unknown };
+  // 호스트 표시 언어("ko" | "en") — 사람표면 문자열(status message) 해소용.
+  locale?: () => string;
   ui: { registerView: (id: string, provider: ViewProvider) => Disposable };
   commands?: {
     register: (name: string, spec: CommandSpec) => Disposable;
@@ -61,6 +64,8 @@ interface ViewContext {
   restore?: { cwd: string | null; state: unknown } | null;
   // 관찰 상태 보고(B3) — 뷰 레코드 영속. kv 에 viewId 키 영속 금지(재사용 충돌).
   setRestoreState?: (state: unknown) => void;
+  // 뷰 status 축 보고 — {code,message} 또는 상태 없음(null). 사이드바 배치면 no-op(viewId null).
+  setStatus?: (status: { code: string; message?: string } | null) => void;
 }
 interface ViewProvider { mount(container: HTMLElement, ctx: ViewContext): void; unmount?(container: HTMLElement): void }
 interface PluginContext { app: PluginApi; subscriptions: { push(d: Disposable): void } }
@@ -445,6 +450,10 @@ export function activate(ctx: PluginContext): void {
       if (!viewId) return;
       lastMountedViewId = viewId;
 
+      // 뷰 status 축 보고 — 이 뷰의 진짜 상태(로딩·준비·오류)만. message 는 호스트 언어로 해소.
+      const reportStatus = (phase: BrowserPhase): void =>
+        vctx.setStatus?.(browserStatus(phase, app.locale?.() ?? "en"));
+
       // 멱등 mount — 호스트는 같은 뷰를 재부모/재활성 시 다시 mount 할 수 있다. 이전 서피스를 먼저 닫지
       // 않으면 offscreen NSView 들이 창 content view 아래 스택으로 쌓여(같은 부모·겹친 bounds) 옛 프레임이
       // 활성 셀을 가린다(실측: 활성 탭에 옛 페이지가 남는 stale). 재mount 전 이전 뷰를 확실히 회수한다.
@@ -606,7 +615,7 @@ export function activate(ctx: PluginContext): void {
           const r = measureRect(cell);
           const out = await send({ type: "create", mode: "offscreen", owner: PLUGIN_ID, scale: window.devicePixelRatio || 1, x: r.x, y: r.y, w: r.w, h: r.h, url: first });
           const created = out && typeof out.id === "number" ? (out.id as number) : null;
-          if (created == null) { cell.textContent = "엔진 서피스 생성 실패"; return; }
+          if (created == null) { cell.textContent = "엔진 서피스 생성 실패"; reportStatus("error"); return; }
           id = created;
           lc.ledgerAdd(id); // 생성 장부 — close 확인 시 지워지고, reconcile 이 잔여를 회수
           lc.byviewSet(viewId, id); // 재부착 지도 — 재적재 후 이 뷰가 같은 서피스를 되찾는다
@@ -624,6 +633,9 @@ export function activate(ctx: PluginContext): void {
         }
         surfaceId = id;
         entry.surfaceId = id;
+        // 초기 status — 새로 만든 서피스는 시작 URL 로딩 중, 재부착 서피스는 이미 로드된 idle(준비).
+        // 이후 전이는 loading 이벤트가 단일 소스로 동기화한다. 재부착 시 이전 mount 의 stale 로딩도 이때 해소.
+        reportStatus(prior != null ? "ready" : "loading");
         // 재부착된 서피스는 teardown 이 숨겨놨을 수 있다 — 재부착 시 다시 보이게.
         if (prior != null) void send({ type: "hidden", id, hidden: false });
         // 새 링크 라우팅 정책을 엔진에 통지(tab=팝업 취소+popup-url 이벤트 / window=엔진 네이티브 팝업).
@@ -644,6 +656,8 @@ export function activate(ctx: PluginContext): void {
         h.on("loading", (p) => {
           if (p.id !== id) return;
           tb.setNavState({ loading: !!p.loading, canBack: !!p.canBack, canForward: !!p.canForward });
+          // loading 이벤트 = 로딩·준비 전이의 단일 소스. 로딩 중 = code loading(표시 전용), 끝 = 상태 없음(null).
+          reportStatus(p.loading ? "loading" : "ready");
         });
         // 새 링크(target=_blank/window.open) — tab 모드에서 엔진이 popup-url 로 배달. 새 offscreen 탭으로 연다.
         h.on("popup-url", (p) => {
