@@ -77,7 +77,7 @@ function createLifecycle(opts) {
       }, debounceMs);
       pendingClose.set(id, t);
     },
-    adopt(id) {
+    reattach(id) {
       const t = pendingClose.get(id);
       if (!t) return false;
       clearTimeout(t);
@@ -608,7 +608,7 @@ function activate(ctx) {
         star.textContent = bookmarks.has(currentUrl) ? "\u2605" : "\u2606";
       });
       const priorId = lc.byviewGet(viewId);
-      if (priorId != null) lc.adopt(priorId);
+      if (priorId != null) lc.reattach(priorId);
       void (async () => {
         let id;
         if (priorId != null) {

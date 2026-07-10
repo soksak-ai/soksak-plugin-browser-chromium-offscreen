@@ -111,7 +111,7 @@ export function activate(ctx: PluginContext): void {
   );
 
   // ── 유령 회수(reconcile) — 장부에 있고 엔진에 살아있는데 아무도 안 잡은 id 만 회수한다.
-  // "잡음" = 이번 인스턴스의 뷰가 소유 / 입양 지도에 대기(remount 가 곧 재부착) / close 디바운스 중.
+  // "잡음" = 이번 인스턴스의 뷰가 소유 / 재부착 지도에 대기(remount 가 곧 재부착) / close 디바운스 중.
   // grace 는 복원 remount 의 비동기 재부착이 끝날 시간(너무 일찍 회수하면 살아있는 서피스를 잘못 닫는다).
   const RECONCILE_GRACE_MS = 4000;
   const reconcileTimer = setTimeout(() => {
@@ -323,7 +323,7 @@ export function activate(ctx: PluginContext): void {
         if (surfaceId != null) {
           const id = surfaceId;
           // 즉시 숨김(탭은 닫힌 확정 상태 — 서피스가 화면에 남으면 안 된다) 후 close 는 디바운스:
-          // remount(재부모화·재적재 입양)가 취소하고 재사용한다. 장부는 close 가 확인된 때에만 지운다.
+          // remount(재부모화·재적재 재부착)가 취소하고 재사용한다. 장부는 close 가 확인된 때에만 지운다.
           void send({ type: "hidden", id, hidden: true });
           lc.scheduleClose(id, () => {
             lc.byviewDelete(viewId);
@@ -411,16 +411,16 @@ export function activate(ctx: PluginContext): void {
         star.textContent = bookmarks.has(currentUrl) ? "★" : "☆";
       });
 
-      // ── 입양 후보 — 이전 인스턴스/이전 mount 가 이 viewId 로 만든 서피스(페이지 상태 보존).
+      // ── 재부착 후보 — 이전 인스턴스/이전 mount 가 이 viewId 로 만든 서피스(페이지 상태 보존).
       // 디바운스 중인 close 가 있으면 취소하고 재사용한다(remount = 재부모화·재적재).
       const priorId = lc.byviewGet(viewId);
-      if (priorId != null) lc.adopt(priorId); // 디바운스 중이면 취소하고 재사용
+      if (priorId != null) lc.reattach(priorId); // 디바운스 중이면 취소하고 재사용
 
-      // ── 서피스 입양 또는 생성 + 이벤트 배선 ──
+      // ── 서피스 재부착 또는 생성 + 이벤트 배선 ──
       void (async () => {
         let id: number;
         if (priorId != null) {
-          // 입양 — 엔진 child 는 살아있다(창 세션 동안 id 유효). create 없이 재부착만 한다.
+          // 재부착 — 엔진 child 는 살아있다(창 세션 동안 id 유효). create 없이 재부착만 한다.
           id = priorId;
           const saved = app.data ? ((await app.data.kv.get(`vurl:${viewId}`)) as string | null) : null;
           if (saved) { currentUrl = saved; url.value = saved; }
@@ -432,10 +432,10 @@ export function activate(ctx: PluginContext): void {
           if (created == null) { cell.textContent = "엔진 서피스 생성 실패"; return; }
           id = created;
           lc.ledgerAdd(id); // 생성 장부 — close 확인 시 지워지고, reconcile 이 잔여를 회수
-          lc.byviewSet(viewId, id); // 입양 지도 — 재적재 후 이 뷰가 같은 서피스를 되찾는다
+          lc.byviewSet(viewId, id); // 재부착 지도 — 재적재 후 이 뷰가 같은 서피스를 되찾는다
           setUrlBar(first);
         }
-        // 생성/입양 중 unmount(disposed) 또는 더 새 mount 가 이 뷰를 넘겨받음(map 정체성 불일치) →
+        // 생성/재부착 중 unmount(disposed) 또는 더 새 mount 가 이 뷰를 넘겨받음(map 정체성 불일치) →
         // 소유하지 않는다. 이 가드가 뷰당 서피스 1개를 보장해 스택 가림을 원천 차단한다.
         if (disposed || views.get(viewId) !== entry) {
           if (priorId == null) { void send({ type: "close", id }).then((r2) => { if (r2 && (r2 as { ok?: boolean }).ok) lc.ledgerRemove(id); }); lc.byviewDelete(viewId); }
@@ -443,7 +443,7 @@ export function activate(ctx: PluginContext): void {
         }
         surfaceId = id;
         entry.surfaceId = id;
-        // 입양된 서피스는 teardown 이 숨겨놨을 수 있다 — 재부착 시 다시 보이게.
+        // 재부착된 서피스는 teardown 이 숨겨놨을 수 있다 — 재부착 시 다시 보이게.
         if (priorId != null) void send({ type: "hidden", id, hidden: false });
         // 새 링크 라우팅 정책을 엔진에 통지(tab=팝업 취소+popup-url 이벤트 / window=엔진 네이티브 팝업).
         void send({ type: "popup-mode", asWindow: newWindowMode() });
