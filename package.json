@@ -15,6 +15,6 @@
     "typescript": "~5.9.3",
     "vitest": "^2.1.8",
     "jsdom": "^25.0.1",
-    "soksak-kit-browser-chassis": "github:soksak-ai/soksak-kit-browser-chassis"
+    "soksak-kit-browser-common": "github:soksak-ai/soksak-kit-browser-common"
   }
 }

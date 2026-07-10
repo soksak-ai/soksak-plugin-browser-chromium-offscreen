@@ -1,4 +1,4 @@
-// ../../kits/soksak-kit-browser-chassis/src/url.ts
+// ../../kits/soksak-kit-browser-common/src/url.ts
 function normalizeUrl(raw) {
   const s = raw.trim();
   if (!s) return "about:blank";
@@ -7,7 +7,7 @@ function normalizeUrl(raw) {
   return `https://www.google.com/search?q=${encodeURIComponent(s)}`;
 }
 
-// ../../kits/soksak-kit-browser-chassis/src/nav-state.ts
+// ../../kits/soksak-kit-browser-common/src/nav-state.ts
 var initialNavState = { loading: false, canBack: false, canForward: false };
 function renderNavState(s) {
   return {
@@ -20,7 +20,7 @@ function renderNavState(s) {
   };
 }
 
-// ../../kits/soksak-kit-browser-chassis/src/lifecycle.ts
+// ../../kits/soksak-kit-browser-common/src/lifecycle.ts
 function createLifecycle(opts) {
   const LEDGER = `${opts.storagePrefix}-created`;
   const BYVIEW = `${opts.storagePrefix}-byview`;
@@ -94,7 +94,7 @@ function createLifecycle(opts) {
   };
 }
 
-// ../../kits/soksak-kit-browser-chassis/src/input-forward.ts
+// ../../kits/soksak-kit-browser-common/src/input-forward.ts
 function modsOf(e) {
   return (e.shiftKey ? 1 : 0) | (e.ctrlKey ? 2 : 0) | (e.altKey ? 4 : 0) | (e.metaKey ? 8 : 0);
 }
@@ -248,7 +248,7 @@ function forwardInput(container, send) {
   };
 }
 
-// ../../kits/soksak-kit-browser-chassis/src/toolbar.ts
+// ../../kits/soksak-kit-browser-common/src/toolbar.ts
 function btn(node, label, title) {
   const b = document.createElement("button");
   b.type = "button";

@@ -3,7 +3,7 @@
 // mode:"offscreen" 으로 연다: 엔진이 창 없이 그려 공유 텍스처를 코어 소유 레이어에 present 하고,
 // 이 뷰의 DOM 셀이 모든 입력을 받아 프로토콜(mouse/wheel/key/ime)로 포워딩한다. 코어는 메시지 의미를
 // 모른다(맹목 relay) — 결합은 매니페스트 sidecars[] + 메시지뿐(약결합). eval 없음.
-import { forwardInput, normalizeUrl, createLifecycle, reclaimTargets, createBrowserToolbar } from "soksak-kit-browser-chassis";
+import { forwardInput, normalizeUrl, createLifecycle, reclaimTargets, createBrowserToolbar } from "soksak-kit-browser-common";
 
 // ── 앱 API 표면(코어 PluginApi 부분집합) ────────────────────────────────────────────────────
 interface SidecarHandle {
@@ -57,7 +57,7 @@ function measureRect(el: HTMLElement): { x: number; y: number; w: number; h: num
   const y = Math.ceil(r.top);
   return { x, y, w: Math.max(1, Math.floor(r.right) - x), h: Math.max(1, Math.floor(r.bottom) - y) };
 }
-// normalizeUrl 은 soksak-kit-browser-chassis 이 단일 진실(세 브라우저 공유).
+// normalizeUrl 은 soksak-kit-browser-common 이 단일 진실(세 브라우저 공유).
 
 // ── 뷰 레지스트리(커맨드가 활성/지정 뷰의 서피스에 접근) ────────────────────────────────────
 interface ViewEntry {
@@ -82,7 +82,7 @@ function resolveEntry(viewId?: string): ViewEntry | null {
 const PLUGIN_ID = "soksak-plugin-browser-chromium-offscreen";
 let pendingUrl: string | null = null;
 
-// ── 재적재 생존 수명주기 — soksak-kit-browser-chassis 이 단일 진실(규칙·근거는 kit lifecycle 모듈 주석).
+// ── 재적재 생존 수명주기 — soksak-kit-browser-common 이 단일 진실(규칙·근거는 kit lifecycle 모듈 주석).
 const lc = createLifecycle({ storagePrefix: "soksak-offscreen" });
 
 export function activate(ctx: PluginContext): void {
@@ -299,7 +299,7 @@ export function activate(ctx: PluginContext): void {
       container.style.cssText = "position:absolute;inset:0;display:flex;flex-direction:column;background:transparent";
 
       const homeUrl = (): string => normalizeUrl(String(app.settings?.get("homeUrl") ?? "https://example.com"));
-      // ── 툴바 — 공용 구현(soksak-kit-browser-chassis createBrowserToolbar): 세 브라우저 동일 DOM·노드·외형 ──
+      // ── 툴바 — 공용 구현(soksak-kit-browser-common createBrowserToolbar): 세 브라우저 동일 DOM·노드·외형 ──
       const tb = createBrowserToolbar(container, {
         onNavigate: (raw) => entry.navigate(normalizeUrl(raw)),
         onBack: () => { if (surfaceId != null) void send({ type: "back", id: surfaceId }); },
