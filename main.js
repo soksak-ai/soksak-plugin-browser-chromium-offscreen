@@ -1,4 +1,96 @@
-// src/input-forward.ts
+// ../../../ai/cli/soksak-browser-kit/src/url.ts
+function normalizeUrl(raw) {
+  const s = raw.trim();
+  if (!s) return "about:blank";
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(s) || s.startsWith("about:") || s.startsWith("data:")) return s;
+  if (/^[^\s.]+\.[^\s]+/.test(s)) return `https://${s}`;
+  return `https://www.google.com/search?q=${encodeURIComponent(s)}`;
+}
+
+// ../../../ai/cli/soksak-browser-kit/src/nav-state.ts
+function renderNavState(s) {
+  return {
+    reloadGlyph: s.loading ? "\u2715" : "\u27F3",
+    reloadAction: s.loading ? "stop" : "reload",
+    progressVisible: s.loading,
+    progressWidth: s.loading ? 70 : 100,
+    backEnabled: s.canBack,
+    forwardEnabled: s.canForward
+  };
+}
+
+// ../../../ai/cli/soksak-browser-kit/src/lifecycle.ts
+function createLifecycle(opts) {
+  const LEDGER = `${opts.storagePrefix}-created`;
+  const BYVIEW = `${opts.storagePrefix}-byview`;
+  const debounceMs = opts.closeDebounceMs ?? 800;
+  const pendingClose = /* @__PURE__ */ new Map();
+  function ssRead(key, fallback) {
+    try {
+      const raw = sessionStorage.getItem(key);
+      return raw ? JSON.parse(raw) : fallback;
+    } catch {
+      return fallback;
+    }
+  }
+  function ssWrite(key, value) {
+    try {
+      sessionStorage.setItem(key, JSON.stringify(value));
+    } catch {
+    }
+  }
+  const ledgerRead = () => {
+    const v = ssRead(LEDGER, []);
+    return Array.isArray(v) ? v.filter((x) => typeof x === "number") : [];
+  };
+  const byviewRead = () => {
+    const v = ssRead(BYVIEW, {});
+    return v && typeof v === "object" && !Array.isArray(v) ? v : {};
+  };
+  return {
+    ledgerRead,
+    ledgerAdd(id) {
+      const l = ledgerRead();
+      if (!l.includes(id)) ssWrite(LEDGER, [...l, id]);
+    },
+    ledgerRemove(id) {
+      ssWrite(LEDGER, ledgerRead().filter((x) => x !== id));
+    },
+    byviewGet(viewId) {
+      return byviewRead()[viewId];
+    },
+    byviewValues() {
+      return Object.values(byviewRead());
+    },
+    byviewSet(viewId, id) {
+      ssWrite(BYVIEW, { ...byviewRead(), [viewId]: id });
+    },
+    byviewDelete(viewId) {
+      const m = byviewRead();
+      delete m[viewId];
+      ssWrite(BYVIEW, m);
+    },
+    scheduleClose(id, onFire) {
+      const t = setTimeout(() => {
+        pendingClose.delete(id);
+        onFire();
+      }, debounceMs);
+      pendingClose.set(id, t);
+    },
+    adopt(id) {
+      const t = pendingClose.get(id);
+      if (!t) return false;
+      clearTimeout(t);
+      pendingClose.delete(id);
+      return true;
+    },
+    pendingCloseIds() {
+      return [...pendingClose.keys()];
+    }
+  };
+}
+
+// ../../../ai/cli/soksak-browser-kit/src/input-forward.ts
 function modsOf(e) {
   return (e.shiftKey ? 1 : 0) | (e.ctrlKey ? 2 : 0) | (e.altKey ? 4 : 0) | (e.metaKey ? 8 : 0);
 }
@@ -159,13 +251,6 @@ function measureRect(el) {
   const y = Math.ceil(r.top);
   return { x, y, w: Math.max(1, Math.floor(r.right) - x), h: Math.max(1, Math.floor(r.bottom) - y) };
 }
-function normalizeUrl(raw) {
-  const s = raw.trim();
-  if (!s) return "about:blank";
-  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(s) || s.startsWith("about:") || s.startsWith("data:")) return s;
-  if (/^[^\s.]+\.[^\s]+/.test(s)) return `https://${s}`;
-  return `https://www.google.com/search?q=${encodeURIComponent(s)}`;
-}
 var views = /* @__PURE__ */ new Map();
 var activeViewId = null;
 var lastMountedViewId = null;
@@ -177,47 +262,7 @@ function resolveEntry(viewId) {
   return first.done ? null : first.value;
 }
 var pendingUrl = null;
-var LEDGER_KEY = "soksak-offscreen-created";
-var BYVIEW_KEY = "soksak-offscreen-byview";
-var CLOSE_DEBOUNCE_MS = 800;
-function ssRead(key, fallback) {
-  try {
-    const raw = sessionStorage.getItem(key);
-    return raw ? JSON.parse(raw) : fallback;
-  } catch {
-    return fallback;
-  }
-}
-function ssWrite(key, value) {
-  try {
-    sessionStorage.setItem(key, JSON.stringify(value));
-  } catch {
-  }
-}
-function ledgerRead() {
-  const v = ssRead(LEDGER_KEY, []);
-  return Array.isArray(v) ? v.filter((x) => typeof x === "number") : [];
-}
-function ledgerAdd(id) {
-  const l = ledgerRead();
-  if (!l.includes(id)) ssWrite(LEDGER_KEY, [...l, id]);
-}
-function ledgerRemove(id) {
-  ssWrite(LEDGER_KEY, ledgerRead().filter((x) => x !== id));
-}
-function byviewRead() {
-  const v = ssRead(BYVIEW_KEY, {});
-  return v && typeof v === "object" && !Array.isArray(v) ? v : {};
-}
-function byviewSet(viewId, id) {
-  ssWrite(BYVIEW_KEY, { ...byviewRead(), [viewId]: id });
-}
-function byviewDelete(viewId) {
-  const m = byviewRead();
-  delete m[viewId];
-  ssWrite(BYVIEW_KEY, m);
-}
-var pendingClose = /* @__PURE__ */ new Map();
+var lc = createLifecycle({ storagePrefix: "soksak-offscreen" });
 function activate(ctx) {
   const { app } = ctx;
   let handleP = null;
@@ -252,18 +297,18 @@ function activate(ctx) {
       const alive = new Set((stats?.ids ?? []).map(Number));
       const claimed = /* @__PURE__ */ new Set([
         ...[...views.values()].map((v) => v.surfaceId).filter((x) => x != null),
-        ...Object.values(byviewRead()),
-        ...pendingClose.keys()
+        ...lc.byviewValues(),
+        ...lc.pendingCloseIds()
       ]);
-      for (const id of ledgerRead()) {
+      for (const id of lc.ledgerRead()) {
         if (!alive.has(id)) {
-          ledgerRemove(id);
+          lc.ledgerRemove(id);
           continue;
         }
         if (claimed.has(id)) continue;
         console.warn(`[chromium-offscreen] \uC720\uB839 \uC11C\uD53C\uC2A4 \uD68C\uC218: id=${id}`);
         void send({ type: "close", id }).then((r) => {
-          if (r && r.ok) ledgerRemove(id);
+          if (r && r.ok) lc.ledgerRemove(id);
         });
       }
     })();
@@ -354,7 +399,7 @@ function activate(ctx) {
       handler: async () => ({
         ok: true,
         ids: [...views.values()].map((v) => ({ viewId: v.viewId, surfaceId: v.surfaceId, url: v.getUrl() })),
-        ledger: ledgerRead(),
+        ledger: lc.ledgerRead(),
         // 유령 방지 장부 스냅샷 — chromium 어댑터 stats 와 동형 진단
         engine: await send({ type: "stats" })
       })
@@ -423,16 +468,15 @@ function activate(ctx) {
       let stopInput = null;
       let stopFollow = null;
       let disposed = false;
-      let loading = false;
-      let canBack = false;
-      let canForward = false;
+      let nav = { loading: false, canBack: false, canForward: false };
       function applyNavState() {
-        reloadBtn.textContent = loading ? "\u2715" : "\u27F3";
-        reloadBtn.title = loading ? "\uC815\uC9C0" : "\uC0C8\uB85C\uACE0\uCE68";
-        progress.style.opacity = loading ? "1" : "0";
-        progress.style.width = loading ? "70%" : "100%";
-        backBtn.style.opacity = canBack ? "1" : "0.35";
-        fwdBtn.style.opacity = canForward ? "1" : "0.35";
+        const r = renderNavState(nav);
+        reloadBtn.textContent = r.reloadGlyph;
+        reloadBtn.title = r.reloadAction === "stop" ? "\uC815\uC9C0" : "\uC0C8\uB85C\uACE0\uCE68";
+        progress.style.opacity = r.progressVisible ? "1" : "0";
+        progress.style.width = `${r.progressWidth}%`;
+        backBtn.style.opacity = r.backEnabled ? "1" : "0.35";
+        fwdBtn.style.opacity = r.forwardEnabled ? "1" : "0.35";
       }
       const teardown = () => {
         if (disposed) return;
@@ -444,14 +488,12 @@ function activate(ctx) {
         if (surfaceId != null) {
           const id = surfaceId;
           void send({ type: "hidden", id, hidden: true });
-          const t = setTimeout(() => {
-            pendingClose.delete(id);
-            byviewDelete(viewId);
+          lc.scheduleClose(id, () => {
+            lc.byviewDelete(viewId);
             void send({ type: "close", id }).then((r) => {
-              if (r && r.ok) ledgerRemove(id);
+              if (r && r.ok) lc.ledgerRemove(id);
             });
-          }, CLOSE_DEBOUNCE_MS);
-          pendingClose.set(id, t);
+          });
         }
         surfaceId = null;
       };
@@ -538,13 +580,13 @@ function activate(ctx) {
         }
       });
       backBtn.addEventListener("click", () => {
-        if (canBack && surfaceId != null) void send({ type: "back", id: surfaceId });
+        if (nav.canBack && surfaceId != null) void send({ type: "back", id: surfaceId });
       });
       fwdBtn.addEventListener("click", () => {
-        if (canForward && surfaceId != null) void send({ type: "forward", id: surfaceId });
+        if (nav.canForward && surfaceId != null) void send({ type: "forward", id: surfaceId });
       });
       reloadBtn.addEventListener("click", () => {
-        if (surfaceId != null) void send({ type: loading ? "stop" : "reload", id: surfaceId });
+        if (surfaceId != null) void send({ type: renderNavState(nav).reloadAction, id: surfaceId });
       });
       homeBtn.addEventListener("click", () => entry.navigate(homeUrl()));
       star.addEventListener("click", () => {
@@ -565,14 +607,8 @@ function activate(ctx) {
         }
         star.textContent = bookmarks.has(currentUrl) ? "\u2605" : "\u2606";
       });
-      const priorId = byviewRead()[viewId];
-      if (priorId != null) {
-        const t = pendingClose.get(priorId);
-        if (t) {
-          clearTimeout(t);
-          pendingClose.delete(priorId);
-        }
-      }
+      const priorId = lc.byviewGet(viewId);
+      if (priorId != null) lc.adopt(priorId);
       void (async () => {
         let id;
         if (priorId != null) {
@@ -592,16 +628,16 @@ function activate(ctx) {
             return;
           }
           id = created;
-          ledgerAdd(id);
-          byviewSet(viewId, id);
+          lc.ledgerAdd(id);
+          lc.byviewSet(viewId, id);
           setUrlBar(first);
         }
         if (disposed || views.get(viewId) !== entry) {
           if (priorId == null) {
             void send({ type: "close", id }).then((r2) => {
-              if (r2 && r2.ok) ledgerRemove(id);
+              if (r2 && r2.ok) lc.ledgerRemove(id);
             });
-            byviewDelete(viewId);
+            lc.byviewDelete(viewId);
           }
           return;
         }
@@ -623,9 +659,7 @@ function activate(ctx) {
         });
         h.on("loading", (p) => {
           if (p.id !== id) return;
-          loading = !!p.loading;
-          canBack = !!p.canBack;
-          canForward = !!p.canForward;
+          nav = { loading: !!p.loading, canBack: !!p.canBack, canForward: !!p.canForward };
           applyNavState();
         });
         h.on("popup-url", (p) => {

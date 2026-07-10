@@ -3,7 +3,8 @@
 // mode:"offscreen" 으로 연다: 엔진이 창 없이 그려 공유 텍스처를 코어 소유 레이어에 present 하고,
 // 이 뷰의 DOM 셀이 모든 입력을 받아 프로토콜(mouse/wheel/key/ime)로 포워딩한다. 코어는 메시지 의미를
 // 모른다(맹목 relay) — 결합은 매니페스트 sidecars[] + 메시지뿐(약결합). eval 없음.
-import { forwardInput } from "./input-forward";
+import { forwardInput, normalizeUrl, createLifecycle, reclaimTargets, renderNavState } from "soksak-browser-kit";
+import type { NavState } from "soksak-browser-kit";
 
 // ── 앱 API 표면(코어 PluginApi 부분집합) ────────────────────────────────────────────────────
 interface SidecarHandle {
@@ -50,13 +51,7 @@ function measureRect(el: HTMLElement): { x: number; y: number; w: number; h: num
   const y = Math.ceil(r.top);
   return { x, y, w: Math.max(1, Math.floor(r.right) - x), h: Math.max(1, Math.floor(r.bottom) - y) };
 }
-function normalizeUrl(raw: string): string {
-  const s = raw.trim();
-  if (!s) return "about:blank";
-  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(s) || s.startsWith("about:") || s.startsWith("data:")) return s;
-  if (/^[^\s.]+\.[^\s]+/.test(s)) return `https://${s}`;
-  return `https://www.google.com/search?q=${encodeURIComponent(s)}`;
-}
+// normalizeUrl 은 soksak-browser-kit 이 단일 진실(세 브라우저 공유).
 
 // ── 뷰 레지스트리(커맨드가 활성/지정 뷰의 서피스에 접근) ────────────────────────────────────
 interface ViewEntry {
@@ -80,58 +75,8 @@ function resolveEntry(viewId?: string): ViewEntry | null {
 // 새 탭이 열 URL(open 커맨드 / popup-url 이 set → 다음 mount 가 1회 소비).
 let pendingUrl: string | null = null;
 
-// ── 재적재 생존 수명주기(창-스코프 영속) — browser-chromium 어댑터의 확립된 규칙을 동일 적용 ──
-// 앱 웹뷰 reload(vite HMR/dev.load)는 deactivate 없이 플러그인 JS 를 통째로 죽이고, deactivate 경로도
-// 채널이 먼저 죽어(실측: closeEnter 무증가) 죽는 인스턴스는 엔진에 아무것도 보낼 수 없다. 규칙:
-//   1. 서피스는 인스턴스보다 오래 산다 — 다음 인스턴스가 입양 지도(viewId→surfaceId)로 재부착한다
-//      (페이지 상태 보존 — chromium "keep pages across plugin reloads" 와 동일 의도).
-//   2. 생성 장부(created)는 close 가 엔진에서 확인된 때에만 지운다 — 실패한 close 가 증거를 못 지운다.
-//   3. unmount 의 close 는 디바운스 — remount(재부모화/재적재 입양)가 취소하고 재사용한다.
-//   4. activate 후 reconcile 이 "장부에 있고 엔진에 살아있는데 아무도 안 잡은" id 만 회수한다.
-// sessionStorage 는 창별 + webview reload 생존 + 앱 재시작 시 초기화 — 엔진 child 수명과 정확히 일치.
-const LEDGER_KEY = "soksak-offscreen-created";
-const BYVIEW_KEY = "soksak-offscreen-byview";
-const CLOSE_DEBOUNCE_MS = 800; // remount(unmount→즉시 mount)가 취소할 시간
-function ssRead<T>(key: string, fallback: T): T {
-  try {
-    const raw = sessionStorage.getItem(key);
-    return raw ? (JSON.parse(raw) as T) : fallback;
-  } catch {
-    return fallback;
-  }
-}
-function ssWrite(key: string, value: unknown): void {
-  try {
-    sessionStorage.setItem(key, JSON.stringify(value));
-  } catch {
-    /* sessionStorage 불가 환경 — 영속 없이도 기본 동작은 유지 */
-  }
-}
-function ledgerRead(): number[] {
-  const v = ssRead<unknown>(LEDGER_KEY, []);
-  return Array.isArray(v) ? v.filter((x): x is number => typeof x === "number") : [];
-}
-function ledgerAdd(id: number): void {
-  const l = ledgerRead();
-  if (!l.includes(id)) ssWrite(LEDGER_KEY, [...l, id]);
-}
-function ledgerRemove(id: number): void {
-  ssWrite(LEDGER_KEY, ledgerRead().filter((x) => x !== id));
-}
-function byviewRead(): Record<string, number> {
-  const v = ssRead<unknown>(BYVIEW_KEY, {});
-  return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, number>) : {};
-}
-function byviewSet(viewId: string, id: number): void {
-  ssWrite(BYVIEW_KEY, { ...byviewRead(), [viewId]: id });
-}
-function byviewDelete(viewId: string): void {
-  const m = byviewRead();
-  delete m[viewId];
-  ssWrite(BYVIEW_KEY, m);
-}
-// 디바운스 중인 close 타이머 — remount 입양이 취소한다.
-const pendingClose = new Map<number, ReturnType<typeof setTimeout>>();
+// ── 재적재 생존 수명주기 — soksak-browser-kit 이 단일 진실(규칙·근거는 kit lifecycle 모듈 주석).
+const lc = createLifecycle({ storagePrefix: "soksak-offscreen" });
 
 export function activate(ctx: PluginContext): void {
   const { app } = ctx;
@@ -175,14 +120,14 @@ export function activate(ctx: PluginContext): void {
       const alive = new Set(((stats?.ids as number[] | undefined) ?? []).map(Number));
       const claimed = new Set<number>([
         ...[...views.values()].map((v) => v.surfaceId).filter((x): x is number => x != null),
-        ...Object.values(byviewRead()),
-        ...pendingClose.keys(),
+        ...lc.byviewValues(),
+        ...lc.pendingCloseIds(),
       ]);
-      for (const id of ledgerRead()) {
-        if (!alive.has(id)) { ledgerRemove(id); continue; } // 엔진에 이미 없음 — 장부만 청소
+      for (const id of lc.ledgerRead()) {
+        if (!alive.has(id)) { lc.ledgerRemove(id); continue; } // 엔진에 이미 없음 — 장부만 청소
         if (claimed.has(id)) continue;
         console.warn(`[chromium-offscreen] 유령 서피스 회수: id=${id}`);
-        void send({ type: "close", id }).then((r) => { if (r && (r as { ok?: boolean }).ok) ledgerRemove(id); });
+        void send({ type: "close", id }).then((r) => { if (r && (r as { ok?: boolean }).ok) lc.ledgerRemove(id); });
       }
     })();
   }, RECONCILE_GRACE_MS);
@@ -275,7 +220,7 @@ export function activate(ctx: PluginContext): void {
       handler: async () => ({
         ok: true,
         ids: [...views.values()].map((v) => ({ viewId: v.viewId, surfaceId: v.surfaceId, url: v.getUrl() })),
-        ledger: ledgerRead(), // 유령 방지 장부 스냅샷 — chromium 어댑터 stats 와 동형 진단
+        ledger: lc.ledgerRead(), // 유령 방지 장부 스냅샷 — chromium 어댑터 stats 와 동형 진단
         engine: await send({ type: "stats" }),
       }),
     });
@@ -356,17 +301,16 @@ export function activate(ctx: PluginContext): void {
       let stopInput: (() => void) | null = null;
       let stopFollow: (() => void) | null = null;
       let disposed = false;
-      let loading = false;
-      let canBack = false;
-      let canForward = false;
-      // 엔진 loading 이벤트가 갱신하는 툴바 상태 — reload↔stop 토글, 진행 바, 뒤로/앞으로 활성.
+      // 툴바 내비 상태 — 판정은 kit renderNavState 가 단일 진실(세 브라우저 공유), 여기는 DOM 반영만.
+      let nav: NavState = { loading: false, canBack: false, canForward: false };
       function applyNavState(): void {
-        reloadBtn.textContent = loading ? "✕" : "⟳";
-        reloadBtn.title = loading ? "정지" : "새로고침";
-        progress.style.opacity = loading ? "1" : "0";
-        progress.style.width = loading ? "70%" : "100%"; // 로딩 중 70%, 완료 시 꽉 채우고 페이드아웃
-        backBtn.style.opacity = canBack ? "1" : "0.35";
-        fwdBtn.style.opacity = canForward ? "1" : "0.35";
+        const r = renderNavState(nav);
+        reloadBtn.textContent = r.reloadGlyph;
+        reloadBtn.title = r.reloadAction === "stop" ? "정지" : "새로고침";
+        progress.style.opacity = r.progressVisible ? "1" : "0";
+        progress.style.width = `${r.progressWidth}%`;
+        backBtn.style.opacity = r.backEnabled ? "1" : "0.35";
+        fwdBtn.style.opacity = r.forwardEnabled ? "1" : "0.35";
       }
 
       const teardown = (): void => {
@@ -381,12 +325,10 @@ export function activate(ctx: PluginContext): void {
           // 즉시 숨김(탭은 닫힌 확정 상태 — 서피스가 화면에 남으면 안 된다) 후 close 는 디바운스:
           // remount(재부모화·재적재 입양)가 취소하고 재사용한다. 장부는 close 가 확인된 때에만 지운다.
           void send({ type: "hidden", id, hidden: true });
-          const t = setTimeout(() => {
-            pendingClose.delete(id);
-            byviewDelete(viewId);
-            void send({ type: "close", id }).then((r) => { if (r && (r as { ok?: boolean }).ok) ledgerRemove(id); });
-          }, CLOSE_DEBOUNCE_MS);
-          pendingClose.set(id, t);
+          lc.scheduleClose(id, () => {
+            lc.byviewDelete(viewId);
+            void send({ type: "close", id }).then((r) => { if (r && (r as { ok?: boolean }).ok) lc.ledgerRemove(id); });
+          });
         }
         surfaceId = null;
       };
@@ -455,10 +397,10 @@ export function activate(ctx: PluginContext): void {
       const homeUrl = (): string => normalizeUrl(String(app.settings?.get("homeUrl") ?? "https://example.com"));
       go.addEventListener("click", doNav);
       url.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.isComposing) { doNav(); url.blur(); } });
-      backBtn.addEventListener("click", () => { if (canBack && surfaceId != null) void send({ type: "back", id: surfaceId }); });
-      fwdBtn.addEventListener("click", () => { if (canForward && surfaceId != null) void send({ type: "forward", id: surfaceId }); });
+      backBtn.addEventListener("click", () => { if (nav.canBack && surfaceId != null) void send({ type: "back", id: surfaceId }); });
+      fwdBtn.addEventListener("click", () => { if (nav.canForward && surfaceId != null) void send({ type: "forward", id: surfaceId }); });
       // reload 버튼은 로딩 중이면 정지(stop), 아니면 새로고침 — 표준 브라우저 토글.
-      reloadBtn.addEventListener("click", () => { if (surfaceId != null) void send({ type: loading ? "stop" : "reload", id: surfaceId }); });
+      reloadBtn.addEventListener("click", () => { if (surfaceId != null) void send({ type: renderNavState(nav).reloadAction, id: surfaceId }); });
       homeBtn.addEventListener("click", () => entry.navigate(homeUrl()));
       star.addEventListener("click", () => {
         if (!app.data || !currentUrl || currentUrl === "about:blank") return;
@@ -471,11 +413,8 @@ export function activate(ctx: PluginContext): void {
 
       // ── 입양 후보 — 이전 인스턴스/이전 mount 가 이 viewId 로 만든 서피스(페이지 상태 보존).
       // 디바운스 중인 close 가 있으면 취소하고 재사용한다(remount = 재부모화·재적재).
-      const priorId = byviewRead()[viewId];
-      if (priorId != null) {
-        const t = pendingClose.get(priorId);
-        if (t) { clearTimeout(t); pendingClose.delete(priorId); }
-      }
+      const priorId = lc.byviewGet(viewId);
+      if (priorId != null) lc.adopt(priorId); // 디바운스 중이면 취소하고 재사용
 
       // ── 서피스 입양 또는 생성 + 이벤트 배선 ──
       void (async () => {
@@ -492,14 +431,14 @@ export function activate(ctx: PluginContext): void {
           const created = out && typeof out.id === "number" ? (out.id as number) : null;
           if (created == null) { cell.textContent = "엔진 서피스 생성 실패"; return; }
           id = created;
-          ledgerAdd(id); // 생성 장부 — close 확인 시 지워지고, reconcile 이 잔여를 회수
-          byviewSet(viewId, id); // 입양 지도 — 재적재 후 이 뷰가 같은 서피스를 되찾는다
+          lc.ledgerAdd(id); // 생성 장부 — close 확인 시 지워지고, reconcile 이 잔여를 회수
+          lc.byviewSet(viewId, id); // 입양 지도 — 재적재 후 이 뷰가 같은 서피스를 되찾는다
           setUrlBar(first);
         }
         // 생성/입양 중 unmount(disposed) 또는 더 새 mount 가 이 뷰를 넘겨받음(map 정체성 불일치) →
         // 소유하지 않는다. 이 가드가 뷰당 서피스 1개를 보장해 스택 가림을 원천 차단한다.
         if (disposed || views.get(viewId) !== entry) {
-          if (priorId == null) { void send({ type: "close", id }).then((r2) => { if (r2 && (r2 as { ok?: boolean }).ok) ledgerRemove(id); }); byviewDelete(viewId); }
+          if (priorId == null) { void send({ type: "close", id }).then((r2) => { if (r2 && (r2 as { ok?: boolean }).ok) lc.ledgerRemove(id); }); lc.byviewDelete(viewId); }
           return;
         }
         surfaceId = id;
@@ -516,9 +455,7 @@ export function activate(ctx: PluginContext): void {
         h.on("cursor", (p) => { if (p.id === id) cell.style.cursor = String(p.type ?? "default"); });
         h.on("loading", (p) => {
           if (p.id !== id) return;
-          loading = !!p.loading;
-          canBack = !!p.canBack;
-          canForward = !!p.canForward;
+          nav = { loading: !!p.loading, canBack: !!p.canBack, canForward: !!p.canForward };
           applyNavState();
         });
         // 새 링크(target=_blank/window.open) — tab 모드에서 엔진이 popup-url 로 배달. 새 offscreen 탭으로 연다.
