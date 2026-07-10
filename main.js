@@ -24,8 +24,10 @@ function renderNavState(s) {
 function createLifecycle(opts) {
   const LEDGER = `${opts.storagePrefix}-created`;
   const BYVIEW = `${opts.storagePrefix}-byview`;
+  const CLAIMS = `${opts.storagePrefix}-claims`;
   const debounceMs = opts.closeDebounceMs ?? 800;
   const pendingClose = /* @__PURE__ */ new Map();
+  const INSTANCE = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
   function ssRead(key, fallback) {
     try {
       const raw = sessionStorage.getItem(key);
@@ -40,6 +42,13 @@ function createLifecycle(opts) {
     } catch {
     }
   }
+  const claimsRead = () => ssRead(CLAIMS, {});
+  const claimWrite = (id, owner) => {
+    const m = claimsRead();
+    if (owner) m[String(id)] = owner;
+    else delete m[String(id)];
+    ssWrite(CLAIMS, m);
+  };
   const ledgerRead = () => {
     const v = ssRead(LEDGER, []);
     return Array.isArray(v) ? v.filter((x) => typeof x === "number") : [];
@@ -77,16 +86,25 @@ function createLifecycle(opts) {
     scheduleClose(id, onFire) {
       const t = setTimeout(() => {
         pendingClose.delete(id);
+        const owner = claimsRead()[String(id)];
+        if (owner && owner !== INSTANCE) return;
         onFire();
       }, debounceMs);
       pendingClose.set(id, t);
     },
     reattach(id) {
+      claimWrite(id, INSTANCE);
       const t = pendingClose.get(id);
       if (!t) return false;
       clearTimeout(t);
       pendingClose.delete(id);
       return true;
+    },
+    claim(id) {
+      claimWrite(id, INSTANCE);
+    },
+    claimRelease(id) {
+      claimWrite(id, null);
     },
     pendingCloseIds() {
       return [...pendingClose.keys()];
@@ -401,6 +419,7 @@ function measureRect(el) {
   return { x, y, w: Math.max(1, Math.floor(r.right) - x), h: Math.max(1, Math.floor(r.bottom) - y) };
 }
 var views = /* @__PURE__ */ new Map();
+var MOUNT_DECISIONS = [];
 var activeViewId = null;
 var lastMountedViewId = null;
 function resolveEntry(viewId) {
@@ -467,7 +486,10 @@ function activate(ctx) {
         if (claimed.has(id)) continue;
         console.warn(`[chromium-offscreen] \uC720\uB839 \uC11C\uD53C\uC2A4 \uD68C\uC218: id=${id}`);
         void send({ type: "close", id }).then((r) => {
-          if (r && r.ok) lc.ledgerRemove(id);
+          if (r && r.ok) {
+            lc.ledgerRemove(id);
+            lc.claimRelease(id);
+          }
         });
       }
     })();
@@ -675,7 +697,10 @@ function activate(ctx) {
         const id = Number(p.id);
         if (!Number.isFinite(id)) return { ok: false, error: "id \uD544\uC694" };
         const r = await send({ type: "close", id });
-        if (r && r.ok) lc.ledgerRemove(id);
+        if (r && r.ok) {
+          lc.ledgerRemove(id);
+          lc.claimRelease(id);
+        }
         for (const [vid, sid] of [...views.entries()].map((e) => [e[0], e[1].surfaceId])) {
           if (sid === id) views.get(vid).surfaceId = null;
         }
@@ -693,6 +718,8 @@ function activate(ctx) {
         ids: [...views.values()].map((v) => ({ viewId: v.viewId, surfaceId: v.surfaceId, url: v.getUrl() })),
         ledger: lc.ledgerRead(),
         // 유령 방지 장부 스냅샷 — chromium 어댑터 stats 와 동형 진단
+        mountDecisions: MOUNT_DECISIONS.slice(-10),
+        // 재부착 판정 기록(진단)
         engine: await send({ type: "stats" })
       })
     });
@@ -777,9 +804,12 @@ function activate(ctx) {
           const id = surfaceId;
           void send({ type: "hidden", id, hidden: true });
           lc.scheduleClose(id, () => {
-            lc.byviewDelete(viewId);
+            if (lc.byviewGet(viewId) === id) lc.byviewDelete(viewId);
             void send({ type: "close", id }).then((r) => {
-              if (r && r.ok) lc.ledgerRemove(id);
+              if (r && r.ok) {
+                lc.ledgerRemove(id);
+                lc.claimRelease(id);
+              }
             });
           });
         }
@@ -870,8 +900,21 @@ function activate(ctx) {
       if (priorId != null) lc.reattach(priorId);
       void (async () => {
         let id;
-        if (priorId != null) {
-          id = priorId;
+        let prior = priorId ?? null;
+        if (prior != null) {
+          const st = await send({ type: "stats" });
+          const alive = new Set((st.ids ?? []).map(Number));
+          MOUNT_DECISIONS.push({ viewId, prior, alive: [...alive].slice(0, 20), aliveOk: alive.has(prior) });
+          if (!alive.has(prior)) {
+            lc.byviewDelete(viewId);
+            lc.claimRelease(prior);
+            prior = null;
+          }
+        } else {
+          MOUNT_DECISIONS.push({ viewId, prior: null, alive: [], aliveOk: false });
+        }
+        if (prior != null) {
+          id = prior;
           const rs = vctx.restore?.state;
           if (typeof rs?.url === "string" && rs.url) {
             currentUrl = rs.url;
@@ -889,20 +932,24 @@ function activate(ctx) {
           id = created;
           lc.ledgerAdd(id);
           lc.byviewSet(viewId, id);
+          lc.claim(id);
           setUrlBar(first);
         }
         if (disposed || views.get(viewId) !== entry) {
-          if (priorId == null) {
+          if (prior == null) {
             void send({ type: "close", id }).then((r2) => {
-              if (r2 && r2.ok) lc.ledgerRemove(id);
+              if (r2 && r2.ok) {
+                lc.ledgerRemove(id);
+                lc.claimRelease(id);
+              }
             });
-            lc.byviewDelete(viewId);
+            if (lc.byviewGet(viewId) === id) lc.byviewDelete(viewId);
           }
           return;
         }
         surfaceId = id;
         entry.surfaceId = id;
-        if (priorId != null) void send({ type: "hidden", id, hidden: false });
+        if (prior != null) void send({ type: "hidden", id, hidden: false });
         void send({ type: "popup-mode", asWindow: newWindowMode() });
         stopFollow = follow(id);
         stopInput = forwardInput(cell, (m) => void send({ ...m, id }));
@@ -914,7 +961,8 @@ function activate(ctx) {
           if (p.id === id && typeof p.title === "string") vctx.setTitle?.(p.title);
         });
         h.on("favicon", (p) => {
-          if (p.id === id && typeof p.url === "string") vctx.setIcon?.(p.url);
+          if (p.id !== id || typeof p.url !== "string") return;
+          vctx.setIcon?.(p.url === "data:," ? "" : p.url);
         });
         h.on("cursor", (p) => {
           if (p.id === id) cell.style.cursor = String(p.type ?? "default");

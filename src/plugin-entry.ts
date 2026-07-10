@@ -83,6 +83,8 @@ interface ViewEntry {
   teardown: () => void; // 서피스 close + 옵서버 해제 — 재mount/unmount 에서 멱등 호출
 }
 const views = new Map<string, ViewEntry>();
+// mount 재부착 판정 기록(진단 — stats 로 노출). 재부착 실패 원인 계측용.
+const MOUNT_DECISIONS: Array<{ viewId: string; prior: number | null; alive: number[]; aliveOk: boolean }> = [];
 let activeViewId: string | null = null;
 let lastMountedViewId: string | null = null;
 function resolveEntry(viewId?: string): ViewEntry | null {
@@ -165,7 +167,7 @@ export function activate(ctx: PluginContext): void {
         if (!alive.has(id)) { lc.ledgerRemove(id); continue; } // 엔진에 이미 없음 — 장부만 청소
         if (claimed.has(id)) continue;
         console.warn(`[chromium-offscreen] 유령 서피스 회수: id=${id}`);
-        void send({ type: "close", id }).then((r) => { if (r && (r as { ok?: boolean }).ok) lc.ledgerRemove(id); });
+        void send({ type: "close", id }).then((r) => { if (r && (r as { ok?: boolean }).ok) { lc.ledgerRemove(id); lc.claimRelease(id); } });
       }
     })();
   }, RECONCILE_GRACE_MS);
@@ -396,7 +398,7 @@ export function activate(ctx: PluginContext): void {
         const id = Number((p as { id?: unknown }).id);
         if (!Number.isFinite(id)) return { ok: false, error: "id 필요" };
         const r = await send({ type: "close", id });
-        if (r && (r as { ok?: boolean }).ok) lc.ledgerRemove(id);
+        if (r && (r as { ok?: boolean }).ok) { lc.ledgerRemove(id); lc.claimRelease(id); }
         for (const [vid, sid] of [...views.entries()].map((e) => [e[0], e[1].surfaceId] as const)) {
           if (sid === id) views.get(vid)!.surfaceId = null;
         }
@@ -413,6 +415,7 @@ export function activate(ctx: PluginContext): void {
         ok: true,
         ids: [...views.values()].map((v) => ({ viewId: v.viewId, surfaceId: v.surfaceId, url: v.getUrl() })),
         ledger: lc.ledgerRead(), // 유령 방지 장부 스냅샷 — chromium 어댑터 stats 와 동형 진단
+        mountDecisions: MOUNT_DECISIONS.slice(-10), // 재부착 판정 기록(진단)
         engine: await send({ type: "stats" }),
       }),
     });
@@ -494,8 +497,11 @@ export function activate(ctx: PluginContext): void {
           // remount(재부모화·재적재 재부착)가 취소하고 재사용한다. 장부는 close 가 확인된 때에만 지운다.
           void send({ type: "hidden", id, hidden: true });
           lc.scheduleClose(id, () => {
-            lc.byviewDelete(viewId);
-            void send({ type: "close", id }).then((r) => { if (r && (r as { ok?: boolean }).ok) lc.ledgerRemove(id); });
+            // 지도 삭제는 "여전히 이 id 를 가리킬 때만" — 새 인스턴스가 같은 viewId 에 새 서피스를
+            // 매핑한 뒤라면 그 매핑을 지우면 안 된다(실측: 무조건 삭제가 매 라운드 지도를 증발시켜
+            // 재부착이 영원히 불가능한 create 루프를 만들었다).
+            if (lc.byviewGet(viewId) === id) lc.byviewDelete(viewId);
+            void send({ type: "close", id }).then((r) => { if (r && (r as { ok?: boolean }).ok) { lc.ledgerRemove(id); lc.claimRelease(id); } });
           });
         }
         surfaceId = null;
@@ -575,9 +581,24 @@ export function activate(ctx: PluginContext): void {
       // ── 서피스 재부착 또는 생성 + 이벤트 배선 ──
       void (async () => {
         let id: number;
-        if (priorId != null) {
-          // 재부착 — 엔진 child 는 살아있다(창 세션 동안 id 유효). create 없이 재부착만 한다.
-          id = priorId;
+        // 재부착 대상 생존 검증 — 옛 인스턴스의 디바운스 close 가 이겨 이미 죽었을 수 있다
+        // (claim 도입 전 잔재 + 만일의 leak). 죽은 id 재부착은 빈 화면 좀비를 만든다(실측).
+        let prior: number | null = priorId ?? null;
+        if (prior != null) {
+          const st = await send({ type: "stats" });
+          const alive = new Set((((st as { ids?: number[] }).ids) ?? []).map(Number));
+          MOUNT_DECISIONS.push({ viewId, prior, alive: [...alive].slice(0, 20), aliveOk: alive.has(prior) });
+          if (!alive.has(prior)) {
+            lc.byviewDelete(viewId);
+            lc.claimRelease(prior);
+            prior = null;
+          }
+        } else {
+          MOUNT_DECISIONS.push({ viewId, prior: null, alive: [], aliveOk: false });
+        }
+        if (prior != null) {
+          // 재부착 — 엔진 child 는 살아있음을 위에서 확인했다. create 없이 재부착만 한다.
+          id = prior;
           const rs = vctx.restore?.state as { url?: string } | null | undefined;
           if (typeof rs?.url === "string" && rs.url) { currentUrl = rs.url; tb.setUrl(rs.url); }
         } else {
@@ -589,18 +610,22 @@ export function activate(ctx: PluginContext): void {
           id = created;
           lc.ledgerAdd(id); // 생성 장부 — close 확인 시 지워지고, reconcile 이 잔여를 회수
           lc.byviewSet(viewId, id); // 재부착 지도 — 재적재 후 이 뷰가 같은 서피스를 되찾는다
+          lc.claim(id); // 소유 기록 — 인스턴스 경계의 close 경합 방벽(발화 시점 재확인용)
           setUrlBar(first);
         }
         // 생성/재부착 중 unmount(disposed) 또는 더 새 mount 가 이 뷰를 넘겨받음(map 정체성 불일치) →
         // 소유하지 않는다. 이 가드가 뷰당 서피스 1개를 보장해 스택 가림을 원천 차단한다.
         if (disposed || views.get(viewId) !== entry) {
-          if (priorId == null) { void send({ type: "close", id }).then((r2) => { if (r2 && (r2 as { ok?: boolean }).ok) lc.ledgerRemove(id); }); lc.byviewDelete(viewId); }
+          if (prior == null) {
+            void send({ type: "close", id }).then((r2) => { if (r2 && (r2 as { ok?: boolean }).ok) { lc.ledgerRemove(id); lc.claimRelease(id); } });
+            if (lc.byviewGet(viewId) === id) lc.byviewDelete(viewId); // 같은 가드 — 이긴 mount 의 매핑 보호
+          }
           return;
         }
         surfaceId = id;
         entry.surfaceId = id;
         // 재부착된 서피스는 teardown 이 숨겨놨을 수 있다 — 재부착 시 다시 보이게.
-        if (priorId != null) void send({ type: "hidden", id, hidden: false });
+        if (prior != null) void send({ type: "hidden", id, hidden: false });
         // 새 링크 라우팅 정책을 엔진에 통지(tab=팝업 취소+popup-url 이벤트 / window=엔진 네이티브 팝업).
         void send({ type: "popup-mode", asWindow: newWindowMode() });
         stopFollow = follow(id);
@@ -610,7 +635,11 @@ export function activate(ctx: PluginContext): void {
         h.on("title", (p) => { if (p.id === id && typeof p.title === "string") vctx.setTitle?.(p.title); });
         // 파비콘 — title 동형의 콘텐츠 사실. 빈 url(파비콘 없는 페이지)도 그대로 보고해 이전
         // 페이지의 stale 아이콘이 남지 않게 한다(해제).
-        h.on("favicon", (p) => { if (p.id === id && typeof p.url === "string") vctx.setIcon?.(p.url); });
+        h.on("favicon", (p) => {
+          if (p.id !== id || typeof p.url !== "string") return;
+          // CEF 는 파비콘 없는 페이지에 "data:," 를 준다 — 사실은 "없음"이므로 해제로 정규화.
+          vctx.setIcon?.(p.url === "data:," ? "" : p.url);
+        });
         h.on("cursor", (p) => { if (p.id === id) cell.style.cursor = String(p.type ?? "default"); });
         h.on("loading", (p) => {
           if (p.id !== id) return;
