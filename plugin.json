@@ -12,6 +12,9 @@
     "en": "A browser that drives the Chromium engine in offscreen mode — shared texture painted into a core-owned layer, composited inside the cell. The DOM cell owns input and forwards it (mouse/wheel/key/Korean IME). Same engine and protocol as windowed browser-chromium."
   },
   "entry": "main.js",
+  "implements": [
+    "soksak-browser-spec@1"
+  ],
   "permissions": [
     "ui",
     "commands",
@@ -172,7 +175,8 @@
       },
       {
         "name": "eval",
-        "title": "페이지 JS 실행"
+        "title": "페이지 JS 실행",
+        "danger": "inject"
       },
       {
         "name": "dom.text",
@@ -188,15 +192,18 @@
       },
       {
         "name": "dom.click",
-        "title": "요소 클릭"
+        "title": "요소 클릭",
+        "danger": "inject"
       },
       {
         "name": "dom.fill",
-        "title": "입력 채우기"
+        "title": "입력 채우기",
+        "danger": "inject"
       },
       {
         "name": "dom.submit",
-        "title": "폼 제출"
+        "title": "폼 제출",
+        "danger": "inject"
       },
       {
         "name": "dom.wait-for",

@@ -193,7 +193,7 @@ export function activate(ctx: PluginContext): void {
       message: () => "페이지로 이동했습니다.",
       handler: (p) => {
         const e = resolveEntry(p.viewId as string | undefined);
-        if (!e) return { ok: false, code: "NO_TARGET", message: "no active offscreen browser view" };
+        if (!e) return { ok: false, code: "NO_VIEW", message: "no browser view to act on" };
         const url = normalizeUrl(String(p.url ?? ""));
         app.events.progress?.("navigate", url);
         e.navigate(url);
@@ -207,7 +207,7 @@ export function activate(ctx: PluginContext): void {
         message: () => msg,
         handler: (p) => {
           const e = resolveEntry(p.viewId as string | undefined);
-          if (!e || e.surfaceId == null) return { ok: false, code: "NO_TARGET", message: "no active offscreen browser view" };
+          if (!e || e.surfaceId == null) return { ok: false, code: "NO_VIEW", message: "no browser view to act on" };
           void send({ type: name, id: e.surfaceId });
           return { ok: true, viewId: e.viewId };
         },
@@ -220,7 +220,7 @@ export function activate(ctx: PluginContext): void {
       message: () => "새로고침했습니다.",
       handler: (p) => {
         const e = resolveEntry(p.viewId as string | undefined);
-        if (!e || e.surfaceId == null) return { ok: false, code: "NO_TARGET", message: "no active offscreen browser view" };
+        if (!e || e.surfaceId == null) return { ok: false, code: "NO_VIEW", message: "no browser view to act on" };
         void send({ type: "reload", id: e.surfaceId, ignoreCache: !!p.ignoreCache });
         return { ok: true, viewId: e.viewId };
       },
@@ -231,7 +231,7 @@ export function activate(ctx: PluginContext): void {
       message: () => "로딩을 정지했습니다.",
       handler: (p) => {
         const e = resolveEntry(p.viewId as string | undefined);
-        if (!e || e.surfaceId == null) return { ok: false, code: "NO_TARGET", message: "no active offscreen browser view" };
+        if (!e || e.surfaceId == null) return { ok: false, code: "NO_VIEW", message: "no browser view to act on" };
         void send({ type: "stop", id: e.surfaceId });
         return { ok: true, viewId: e.viewId };
       },
@@ -242,7 +242,7 @@ export function activate(ctx: PluginContext): void {
       message: () => "홈으로 이동했습니다.",
       handler: (p) => {
         const e = resolveEntry(p.viewId as string | undefined);
-        if (!e) return { ok: false, code: "NO_TARGET", message: "no active offscreen browser view" };
+        if (!e) return { ok: false, code: "NO_VIEW", message: "no browser view to act on" };
         const url = normalizeUrl(String(app.settings?.get("homeUrl") ?? "https://example.com"));
         e.navigate(url);
         return { ok: true, viewId: e.viewId, url };
@@ -267,8 +267,9 @@ export function activate(ctx: PluginContext): void {
       e: { surfaceId: number | null; viewId: string },
       body: string,
       timeoutMs = 10000,
-    ): Promise<{ ok: boolean; value: unknown }> {
-      if (e.surfaceId == null) return { ok: false, value: "서피스 없음(생성 중)" };
+    ): Promise<{ ok: boolean; value: unknown; notReady?: boolean }> {
+      // 뷰는 있는데 그릴 문서가 아직 없다 — 페이지의 예외와 다른 사실이므로 다른 코드다.
+      if (e.surfaceId == null) return { ok: false, notReady: true, value: "서피스 생성 중" };
       const h = await engine();
       if (!evalWired) {
         evalWired = true;
@@ -298,14 +299,24 @@ export function activate(ctx: PluginContext): void {
       p: Record<string, unknown>,
       body: string,
       timeoutMs?: number,
+      key = "value",
     ): Promise<Record<string, unknown>> {
       const e = resolveEntry(p.viewId as string | undefined);
-      if (!e) return { ok: false, code: "NO_TARGET", message: "no active offscreen browser view" };
+      if (!e) return { ok: false, code: "NO_VIEW", message: "no browser view to act on" };
       const r = await evalOnEntry(e, body, timeoutMs);
-      if (!r.ok) return { ok: false, code: "INTERNAL", message: String(r.value) };
+      if (!r.ok) return pageFailure(r, e.viewId);
       const v = r.value;
       if (v && typeof v === "object" && !Array.isArray(v)) return { ok: true, ...(v as object), viewId: e.viewId };
-      return { ok: true, value: v, viewId: e.viewId };
+      return { ok: true, [key]: v, viewId: e.viewId };
+    }
+
+    // 페이지 쪽 실패의 세 얼굴을 하나로 뭉개지 않는다: 문서가 아직 없다 / 페이지가 던졌다.
+    // 페이지의 원문은 data.detail 로 가고, message 는 사람이 읽을 문장으로 남는다.
+    function pageFailure(r: { value: unknown; notReady?: boolean }, viewId: string): Record<string, unknown> {
+      if (r.notReady) {
+        return { ok: false, code: "NOT_READY", message: "페이지가 아직 준비되지 않았습니다.", data: { detail: String(r.value), viewId } };
+      }
+      return { ok: false, code: "SCRIPT_ERROR", message: "페이지가 스크립트를 거부했습니다.", data: { detail: String(r.value), viewId } };
     }
 
     reg("eval", {
@@ -318,11 +329,9 @@ export function activate(ctx: PluginContext): void {
       },
       handler: async (p) => {
         const e = resolveEntry(p.viewId as string | undefined);
-        if (!e) return { ok: false, code: "NO_TARGET", message: "no active offscreen browser view" };
+        if (!e) return { ok: false, code: "NO_VIEW", message: "no browser view to act on" };
         const r = await evalOnEntry(e, String(p.js ?? ""));
-        return r.ok
-          ? { ok: true, value: r.value, viewId: e.viewId }
-          : { ok: false, code: "INTERNAL", message: String(r.value) };
+        return r.ok ? { ok: true, value: r.value, viewId: e.viewId } : pageFailure(r, e.viewId);
       },
     });
     reg("dom.text", {
@@ -334,7 +343,7 @@ export function activate(ctx: PluginContext): void {
         viewId: { type: "string" },
       },
       handler: (p) =>
-        runDom(p, domTextBody(p.selector ? String(p.selector) : undefined, typeof p.maxLength === "number" ? p.maxLength : 20000)),
+        runDom(p, domTextBody(p.selector ? String(p.selector) : undefined, typeof p.maxLength === "number" ? p.maxLength : 20000), undefined, "text"),
     });
     reg("dom.html", {
       description: "Get the HTML of the page or a specific selector element.",
@@ -345,7 +354,7 @@ export function activate(ctx: PluginContext): void {
         viewId: { type: "string" },
       },
       handler: (p) =>
-        runDom(p, domHtmlBody(p.selector ? String(p.selector) : undefined, typeof p.maxLength === "number" ? p.maxLength : 20000)),
+        runDom(p, domHtmlBody(p.selector ? String(p.selector) : undefined, typeof p.maxLength === "number" ? p.maxLength : 20000), undefined, "html"),
     });
     reg("dom.query", {
       description:
@@ -371,10 +380,19 @@ export function activate(ctx: PluginContext): void {
       triggers: { ko: "DOM 입력 채우기 폼 입력 텍스트 입력 필드 채우기" },
       params: {
         selector: { type: "string", description: "CSS selector", required: true },
-        text: { type: "string", description: "Value to enter", required: true },
+        value: { type: "string", description: "Value to enter" },
+        // 폼 컨트롤에 넣는 것의 이름은 value 다. text 는 옛 이름이고, 그 이름으로 부르던 호출자를
+        // 깨지 않기 위해 받아만 준다. 하나는 반드시 와야 한다.
+        text: { type: "string", description: "Value to enter (alias of value)" },
         viewId: { type: "string" },
       },
-      handler: (p) => runDom(p, domFillBody(String(p.selector), String(p.text ?? ""))),
+      handler: (p) => {
+        const given = typeof p.value === "string" ? p.value : typeof p.text === "string" ? p.text : null;
+        if (given === null) {
+          return Promise.resolve({ ok: false, code: "INVALID_PARAMS", message: "채울 값이 없습니다(value)." });
+        }
+        return runDom(p, domFillBody(String(p.selector), given));
+      },
     });
     reg("dom.submit", {
       description: "Submit a form (selector can be the form element or any element inside it).",

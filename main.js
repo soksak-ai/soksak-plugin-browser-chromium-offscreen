@@ -507,6 +507,13 @@ function activate(ctx) {
   }, RECONCILE_GRACE_MS);
   ctx.subscriptions.push({ dispose: () => clearTimeout(reconcileTimer) });
   if (app.commands) {
+    let pageFailure2 = function(r, viewId) {
+      if (r.notReady) {
+        return { ok: false, code: "NOT_READY", message: "\uD398\uC774\uC9C0\uAC00 \uC544\uC9C1 \uC900\uBE44\uB418\uC9C0 \uC54A\uC558\uC2B5\uB2C8\uB2E4.", data: { detail: String(r.value), viewId } };
+      }
+      return { ok: false, code: "SCRIPT_ERROR", message: "\uD398\uC774\uC9C0\uAC00 \uC2A4\uD06C\uB9BD\uD2B8\uB97C \uAC70\uBD80\uD588\uC2B5\uB2C8\uB2E4.", data: { detail: String(r.value), viewId } };
+    };
+    var pageFailure = pageFailure2;
     const reg = (name, spec) => ctx.subscriptions.push(app.commands.register(name, spec));
     reg("ping", {
       description: "Load/version check \u2014 returns the plugin id and engine (E2E).",
@@ -520,7 +527,7 @@ function activate(ctx) {
       message: () => "\uD398\uC774\uC9C0\uB85C \uC774\uB3D9\uD588\uC2B5\uB2C8\uB2E4.",
       handler: (p) => {
         const e = resolveEntry(p.viewId);
-        if (!e) return { ok: false, code: "NO_TARGET", message: "no active offscreen browser view" };
+        if (!e) return { ok: false, code: "NO_VIEW", message: "no browser view to act on" };
         const url = normalizeUrl(String(p.url ?? ""));
         app.events.progress?.("navigate", url);
         e.navigate(url);
@@ -533,7 +540,7 @@ function activate(ctx) {
       message: () => msg,
       handler: (p) => {
         const e = resolveEntry(p.viewId);
-        if (!e || e.surfaceId == null) return { ok: false, code: "NO_TARGET", message: "no active offscreen browser view" };
+        if (!e || e.surfaceId == null) return { ok: false, code: "NO_VIEW", message: "no browser view to act on" };
         void send({ type: name, id: e.surfaceId });
         return { ok: true, viewId: e.viewId };
       }
@@ -546,7 +553,7 @@ function activate(ctx) {
       message: () => "\uC0C8\uB85C\uACE0\uCE68\uD588\uC2B5\uB2C8\uB2E4.",
       handler: (p) => {
         const e = resolveEntry(p.viewId);
-        if (!e || e.surfaceId == null) return { ok: false, code: "NO_TARGET", message: "no active offscreen browser view" };
+        if (!e || e.surfaceId == null) return { ok: false, code: "NO_VIEW", message: "no browser view to act on" };
         void send({ type: "reload", id: e.surfaceId, ignoreCache: !!p.ignoreCache });
         return { ok: true, viewId: e.viewId };
       }
@@ -557,7 +564,7 @@ function activate(ctx) {
       message: () => "\uB85C\uB529\uC744 \uC815\uC9C0\uD588\uC2B5\uB2C8\uB2E4.",
       handler: (p) => {
         const e = resolveEntry(p.viewId);
-        if (!e || e.surfaceId == null) return { ok: false, code: "NO_TARGET", message: "no active offscreen browser view" };
+        if (!e || e.surfaceId == null) return { ok: false, code: "NO_VIEW", message: "no browser view to act on" };
         void send({ type: "stop", id: e.surfaceId });
         return { ok: true, viewId: e.viewId };
       }
@@ -568,7 +575,7 @@ function activate(ctx) {
       message: () => "\uD648\uC73C\uB85C \uC774\uB3D9\uD588\uC2B5\uB2C8\uB2E4.",
       handler: (p) => {
         const e = resolveEntry(p.viewId);
-        if (!e) return { ok: false, code: "NO_TARGET", message: "no active offscreen browser view" };
+        if (!e) return { ok: false, code: "NO_VIEW", message: "no browser view to act on" };
         const url = normalizeUrl(String(app.settings?.get("homeUrl") ?? "https://example.com"));
         e.navigate(url);
         return { ok: true, viewId: e.viewId, url };
@@ -588,7 +595,7 @@ function activate(ctx) {
     const pendingEvals = /* @__PURE__ */ new Map();
     let evalWired = false;
     async function evalOnEntry(e, body, timeoutMs = 1e4) {
-      if (e.surfaceId == null) return { ok: false, value: "\uC11C\uD53C\uC2A4 \uC5C6\uC74C(\uC0DD\uC131 \uC911)" };
+      if (e.surfaceId == null) return { ok: false, notReady: true, value: "\uC11C\uD53C\uC2A4 \uC0DD\uC131 \uC911" };
       const h = await engine();
       if (!evalWired) {
         evalWired = true;
@@ -613,14 +620,14 @@ function activate(ctx) {
         });
       });
     }
-    async function runDom(p, body, timeoutMs) {
+    async function runDom(p, body, timeoutMs, key = "value") {
       const e = resolveEntry(p.viewId);
-      if (!e) return { ok: false, code: "NO_TARGET", message: "no active offscreen browser view" };
+      if (!e) return { ok: false, code: "NO_VIEW", message: "no browser view to act on" };
       const r = await evalOnEntry(e, body, timeoutMs);
-      if (!r.ok) return { ok: false, code: "INTERNAL", message: String(r.value) };
+      if (!r.ok) return pageFailure2(r, e.viewId);
       const v = r.value;
       if (v && typeof v === "object" && !Array.isArray(v)) return { ok: true, ...v, viewId: e.viewId };
-      return { ok: true, value: v, viewId: e.viewId };
+      return { ok: true, [key]: v, viewId: e.viewId };
     }
     reg("eval", {
       description: "Run JavaScript in the page (async function body; return a JSON-serializable value).",
@@ -631,9 +638,9 @@ function activate(ctx) {
       },
       handler: async (p) => {
         const e = resolveEntry(p.viewId);
-        if (!e) return { ok: false, code: "NO_TARGET", message: "no active offscreen browser view" };
+        if (!e) return { ok: false, code: "NO_VIEW", message: "no browser view to act on" };
         const r = await evalOnEntry(e, String(p.js ?? ""));
-        return r.ok ? { ok: true, value: r.value, viewId: e.viewId } : { ok: false, code: "INTERNAL", message: String(r.value) };
+        return r.ok ? { ok: true, value: r.value, viewId: e.viewId } : pageFailure2(r, e.viewId);
       }
     });
     reg("dom.text", {
@@ -644,7 +651,7 @@ function activate(ctx) {
         maxLength: { type: "number", description: "Max character length" },
         viewId: { type: "string" }
       },
-      handler: (p) => runDom(p, domTextBody(p.selector ? String(p.selector) : void 0, typeof p.maxLength === "number" ? p.maxLength : 2e4))
+      handler: (p) => runDom(p, domTextBody(p.selector ? String(p.selector) : void 0, typeof p.maxLength === "number" ? p.maxLength : 2e4), void 0, "text")
     });
     reg("dom.html", {
       description: "Get the HTML of the page or a specific selector element.",
@@ -654,7 +661,7 @@ function activate(ctx) {
         maxLength: { type: "number", description: "Max character length" },
         viewId: { type: "string" }
       },
-      handler: (p) => runDom(p, domHtmlBody(p.selector ? String(p.selector) : void 0, typeof p.maxLength === "number" ? p.maxLength : 2e4))
+      handler: (p) => runDom(p, domHtmlBody(p.selector ? String(p.selector) : void 0, typeof p.maxLength === "number" ? p.maxLength : 2e4), void 0, "html")
     });
     reg("dom.query", {
       description: "Summarize matching elements (tag / text / attributes) for a CSS selector \u2014 use to understand page structure.",
@@ -677,10 +684,19 @@ function activate(ctx) {
       triggers: { ko: "DOM \uC785\uB825 \uCC44\uC6B0\uAE30 \uD3FC \uC785\uB825 \uD14D\uC2A4\uD2B8 \uC785\uB825 \uD544\uB4DC \uCC44\uC6B0\uAE30" },
       params: {
         selector: { type: "string", description: "CSS selector", required: true },
-        text: { type: "string", description: "Value to enter", required: true },
+        value: { type: "string", description: "Value to enter" },
+        // 폼 컨트롤에 넣는 것의 이름은 value 다. text 는 옛 이름이고, 그 이름으로 부르던 호출자를
+        // 깨지 않기 위해 받아만 준다. 하나는 반드시 와야 한다.
+        text: { type: "string", description: "Value to enter (alias of value)" },
         viewId: { type: "string" }
       },
-      handler: (p) => runDom(p, domFillBody(String(p.selector), String(p.text ?? "")))
+      handler: (p) => {
+        const given = typeof p.value === "string" ? p.value : typeof p.text === "string" ? p.text : null;
+        if (given === null) {
+          return Promise.resolve({ ok: false, code: "INVALID_PARAMS", message: "\uCC44\uC6B8 \uAC12\uC774 \uC5C6\uC2B5\uB2C8\uB2E4(value)." });
+        }
+        return runDom(p, domFillBody(String(p.selector), given));
+      }
     });
     reg("dom.submit", {
       description: "Submit a form (selector can be the form element or any element inside it).",
