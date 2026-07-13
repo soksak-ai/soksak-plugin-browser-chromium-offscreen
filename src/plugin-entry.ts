@@ -256,7 +256,11 @@ export function activate(ctx: PluginContext): void {
         if (p.url) pendingUrl = normalizeUrl(String(p.url));
         app.events.progress?.("open", pendingUrl ?? "");
         const out = await app.commands!.execute("view.open", { program: "browser-chromium-offscreen" });
-        return { ok: !!out.ok, viewId: (out as { viewId?: string }).viewId };
+        if (!out.ok) return { ok: false, code: "VIEW_OPEN_FAILED", message: "view.open 실패" };
+        // 코어 명령의 답은 봉투다 — 사실은 data 안에 있다(MESSAGE-PROTOCOL). 평면으로 읽으면 뷰는
+        // 열리는데 그 뷰의 id 를 아무도 못 받고, 소비자가 그 뷰를 다시 가리킬 방법이 사라진다.
+        const opened = ((out.data ?? out) as { viewId?: string }).viewId;
+        return { ok: true, viewId: opened };
       },
     });
     // ── eval/dom.* — 엔진 eval verb(스펙 §8) 소비. 결과는 eval-result 이벤트(비동기)로 회수한다.
@@ -267,7 +271,7 @@ export function activate(ctx: PluginContext): void {
       e: { surfaceId: number | null; viewId: string },
       body: string,
       timeoutMs = 10000,
-    ): Promise<{ ok: boolean; value: unknown; notReady?: boolean }> {
+    ): Promise<{ ok: boolean; value: unknown; notReady?: boolean; engineError?: boolean }> {
       // 뷰는 있는데 그릴 문서가 아직 없다 — 페이지의 예외와 다른 사실이므로 다른 코드다.
       if (e.surfaceId == null) return { ok: false, notReady: true, value: "서피스 생성 중" };
       const h = await engine();
@@ -278,10 +282,15 @@ export function activate(ctx: PluginContext): void {
           if (cb) cb({ ok: !!p.ok, value: p.value });
         });
       }
-      const out = await send({ type: "eval", id: e.surfaceId, js: body });
-      const evalId = (out as { evalId?: number }).evalId;
-      if (typeof evalId !== "number")
-        return { ok: false, value: String((out as { error?: string }).error ?? "eval 실패") };
+      // 엔진이 답하지 않거나 이 verb 를 모를 수 있다. 그것은 던질 일이 아니라 답할 일이다 —
+      // 계약은 모든 명령이 봉투로 답하기를 요구한다(§4). 여기서 던지면 소비자는 INTERNAL 만 본다.
+      const out = (await send({ type: "eval", id: e.surfaceId, js: body }).catch(() => null)) as
+        | { evalId?: number; error?: string }
+        | null;
+      const evalId = out?.evalId;
+      if (typeof evalId !== "number") {
+        return { ok: false, engineError: true, value: String(out?.error ?? "엔진이 eval 에 답하지 않았다") };
+      }
       return await new Promise((resolve) => {
         const t = setTimeout(() => {
           pendingEvals.delete(evalId);
@@ -312,7 +321,14 @@ export function activate(ctx: PluginContext): void {
 
     // 페이지 쪽 실패의 세 얼굴을 하나로 뭉개지 않는다: 문서가 아직 없다 / 페이지가 던졌다.
     // 페이지의 원문은 data.detail 로 가고, message 는 사람이 읽을 문장으로 남는다.
-    function pageFailure(r: { value: unknown; notReady?: boolean }, viewId: string): Record<string, unknown> {
+    function pageFailure(
+      r: { value: unknown; notReady?: boolean; engineError?: boolean },
+      viewId: string,
+    ): Record<string, unknown> {
+      // 엔진이 이 능력을 내주지 못하는 것은 페이지의 잘못이 아니다 — 페이지의 예외와 다른 사실이다.
+      if (r.engineError) {
+        return { ok: false, code: "ENGINE_ERROR", message: "브라우저 엔진이 이 요청을 처리하지 못했습니다.", data: { detail: String(r.value), viewId } };
+      }
       if (r.notReady) {
         return { ok: false, code: "NOT_READY", message: "페이지가 아직 준비되지 않았습니다.", data: { detail: String(r.value), viewId } };
       }

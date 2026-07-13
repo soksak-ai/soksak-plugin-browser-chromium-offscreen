@@ -508,6 +508,9 @@ function activate(ctx) {
   ctx.subscriptions.push({ dispose: () => clearTimeout(reconcileTimer) });
   if (app.commands) {
     let pageFailure2 = function(r, viewId) {
+      if (r.engineError) {
+        return { ok: false, code: "ENGINE_ERROR", message: "\uBE0C\uB77C\uC6B0\uC800 \uC5D4\uC9C4\uC774 \uC774 \uC694\uCCAD\uC744 \uCC98\uB9AC\uD558\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4.", data: { detail: String(r.value), viewId } };
+      }
       if (r.notReady) {
         return { ok: false, code: "NOT_READY", message: "\uD398\uC774\uC9C0\uAC00 \uC544\uC9C1 \uC900\uBE44\uB418\uC9C0 \uC54A\uC558\uC2B5\uB2C8\uB2E4.", data: { detail: String(r.value), viewId } };
       }
@@ -589,7 +592,9 @@ function activate(ctx) {
         if (p.url) pendingUrl = normalizeUrl(String(p.url));
         app.events.progress?.("open", pendingUrl ?? "");
         const out = await app.commands.execute("view.open", { program: "browser-chromium-offscreen" });
-        return { ok: !!out.ok, viewId: out.viewId };
+        if (!out.ok) return { ok: false, code: "VIEW_OPEN_FAILED", message: "view.open \uC2E4\uD328" };
+        const opened = (out.data ?? out).viewId;
+        return { ok: true, viewId: opened };
       }
     });
     const pendingEvals = /* @__PURE__ */ new Map();
@@ -604,10 +609,11 @@ function activate(ctx) {
           if (cb) cb({ ok: !!p.ok, value: p.value });
         });
       }
-      const out = await send({ type: "eval", id: e.surfaceId, js: body });
-      const evalId = out.evalId;
-      if (typeof evalId !== "number")
-        return { ok: false, value: String(out.error ?? "eval \uC2E4\uD328") };
+      const out = await send({ type: "eval", id: e.surfaceId, js: body }).catch(() => null);
+      const evalId = out?.evalId;
+      if (typeof evalId !== "number") {
+        return { ok: false, engineError: true, value: String(out?.error ?? "\uC5D4\uC9C4\uC774 eval \uC5D0 \uB2F5\uD558\uC9C0 \uC54A\uC558\uB2E4") };
+      }
       return await new Promise((resolve) => {
         const t = setTimeout(() => {
           pendingEvals.delete(evalId);
