@@ -5,7 +5,7 @@
     "ko": "브라우저 (Chromium offscreen)",
     "en": "Browser (Chromium offscreen)"
   },
-  "version": "0.2.0",
+  "version": "0.0.1",
   "repo": "https://github.com/soksak-ai/soksak-plugin-browser-chromium-offscreen.git",
   "description": {
     "ko": "Chromium 엔진을 offscreen 모드로 구동해 공유 텍스처를 코어 소유 레이어에 그리는 브라우저. 창 없이 그려 셀 안에 합성되며 입력(마우스/휠/키/한글 IME)은 DOM 셀이 받아 포워딩한다. windowed browser-chromium 과 같은 엔진·프로토콜.",
@@ -13,7 +13,10 @@
   },
   "entry": "main.js",
   "implements": [
-    "soksak-spec-plugin-browser"
+    {
+      "id": "soksak-spec-plugin-browser",
+      "version": "0.0.1"
+    }
   ],
   "permissions": [
     "ui",
@@ -25,7 +28,10 @@
   "sidecars": [
     {
       "name": "browser-chromium",
-      \"interface\": { \"id\": \"soksak-spec-sidecar-browser\", \"range\": \"0.0.1\" }
+      "interface": {
+        "id": "soksak-spec-sidecar-browser",
+        "range": "0.0.1"
+      }
     }
   ],
   "configuration": [
