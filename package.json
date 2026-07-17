@@ -16,5 +16,11 @@
     "vitest": "^2.1.8",
     "jsdom": "^25.0.1",
     "soksak-kit-browser-common": "github:soksak-ai/soksak-kit-browser-common"
+  },
+  "soksakRelease": {
+    "kind": "plugin",
+    "id": "soksak-plugin-browser-chromium-offscreen",
+    "repository": "https://github.com/soksak-ai/soksak-plugin-browser-chromium-offscreen",
+    "manifest": "release.json"
   }
 }

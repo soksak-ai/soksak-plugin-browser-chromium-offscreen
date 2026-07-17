@@ -2,14 +2,13 @@
   "spec": "soksak-spec-plugin@0.0.1",
   "id": "soksak-plugin-browser-chromium-offscreen",
   "name": {
-    "ko": "브라우저 (Chromium offscreen)",
+    "ko": "\ube0c\ub77c\uc6b0\uc800 (Chromium offscreen)",
     "en": "Browser (Chromium offscreen)"
   },
   "version": "0.0.1",
-  "repo": "https://github.com/soksak-ai/soksak-plugin-browser-chromium-offscreen.git",
   "description": {
-    "ko": "Chromium 엔진을 offscreen 모드로 구동해 공유 텍스처를 코어 소유 레이어에 그리는 브라우저. 창 없이 그려 셀 안에 합성되며 입력(마우스/휠/키/한글 IME)은 DOM 셀이 받아 포워딩한다. windowed browser-chromium 과 같은 엔진·프로토콜.",
-    "en": "A browser that drives the Chromium engine in offscreen mode — shared texture painted into a core-owned layer, composited inside the cell. The DOM cell owns input and forwards it (mouse/wheel/key/Korean IME). Same engine and protocol as windowed browser-chromium."
+    "ko": "Chromium \uc5d4\uc9c4\uc744 offscreen \ubaa8\ub4dc\ub85c \uad6c\ub3d9\ud574 \uacf5\uc720 \ud14d\uc2a4\ucc98\ub97c \ucf54\uc5b4 \uc18c\uc720 \ub808\uc774\uc5b4\uc5d0 \uadf8\ub9ac\ub294 \ube0c\ub77c\uc6b0\uc800. \ucc3d \uc5c6\uc774 \uadf8\ub824 \uc140 \uc548\uc5d0 \ud569\uc131\ub418\uba70 \uc785\ub825(\ub9c8\uc6b0\uc2a4/\ud720/\ud0a4/\ud55c\uae00 IME)\uc740 DOM \uc140\uc774 \ubc1b\uc544 \ud3ec\uc6cc\ub529\ud55c\ub2e4. windowed browser-chromium \uacfc \uac19\uc740 \uc5d4\uc9c4\u00b7\ud504\ub85c\ud1a0\ucf5c.",
+    "en": "A browser that drives the Chromium engine in offscreen mode \u2014 shared texture painted into a core-owned layer, composited inside the cell. The DOM cell owns input and forwards it (mouse/wheel/key/Korean IME). Same engine and protocol as windowed browser-chromium."
   },
   "entry": "main.js",
   "implements": [
@@ -40,11 +39,11 @@
       "type": "string",
       "default": "https://example.com",
       "title": {
-        "ko": "시작 URL",
+        "ko": "\uc2dc\uc791 URL",
         "en": "Start URL"
       },
       "description": {
-        "ko": "새 offscreen 브라우저 탭이 처음 여는 주소.",
+        "ko": "\uc0c8 offscreen \ube0c\ub77c\uc6b0\uc800 \ud0ed\uc774 \ucc98\uc74c \uc5ec\ub294 \uc8fc\uc18c.",
         "en": "Address a new offscreen browser tab opens to."
       }
     },
@@ -57,21 +56,21 @@
       ],
       "enumLabels": [
         {
-          "ko": "새 탭",
+          "ko": "\uc0c8 \ud0ed",
           "en": "New tab"
         },
         {
-          "ko": "새 창",
+          "ko": "\uc0c8 \ucc3d",
           "en": "New window"
         }
       ],
       "default": "tab",
       "title": {
-        "ko": "새 링크 열기",
+        "ko": "\uc0c8 \ub9c1\ud06c \uc5f4\uae30",
         "en": "Open new links in"
       },
       "description": {
-        "ko": "target=_blank / window.open 링크를 새 탭(인앱 뷰)으로 열지 새 창(독립 OS 창)으로 열지.",
+        "ko": "target=_blank / window.open \ub9c1\ud06c\ub97c \uc0c8 \ud0ed(\uc778\uc571 \ubdf0)\uc73c\ub85c \uc5f4\uc9c0 \uc0c8 \ucc3d(\ub3c5\ub9bd OS \ucc3d)\uc73c\ub85c \uc5f4\uc9c0.",
         "en": "Open target=_blank / window.open links as a new tab (in-app view) or an independent OS window."
       }
     }
@@ -81,10 +80,10 @@
       {
         "id": "content",
         "title": {
-          "ko": "브라우저 (Chromium offscreen)",
+          "ko": "\ube0c\ub77c\uc6b0\uc800 (Chromium offscreen)",
           "en": "Browser (Chromium offscreen)"
         },
-        "icon": "◎",
+        "icon": "\u25ce",
         "placements": [
           "content"
         ],
@@ -100,11 +99,11 @@
       {
         "id": "browser-chromium-offscreen",
         "title": {
-          "ko": "브라우저 (Chromium offscreen)",
+          "ko": "\ube0c\ub77c\uc6b0\uc800 (Chromium offscreen)",
           "en": "Browser (Chromium offscreen)"
         },
         "path": {
-          "ko": "브라우저",
+          "ko": "\ube0c\ub77c\uc6b0\uc800",
           "en": "Browser"
         },
         "kind": "view",
@@ -115,161 +114,161 @@
       {
         "name": "ping",
         "title": {
-          "ko": "플러그인 적재/버전 확인(E2E)",
+          "ko": "\ud50c\ub7ec\uadf8\uc778 \uc801\uc7ac/\ubc84\uc804 \ud655\uc778(E2E)",
           "en": "Ping (load/version check)"
         }
       },
       {
         "name": "navigate",
         "title": {
-          "ko": "URL 이동",
+          "ko": "URL \uc774\ub3d9",
           "en": "Navigate to URL"
         }
       },
       {
         "name": "back",
         "title": {
-          "ko": "뒤로",
+          "ko": "\ub4a4\ub85c",
           "en": "Back"
         }
       },
       {
         "name": "forward",
         "title": {
-          "ko": "앞으로",
+          "ko": "\uc55e\uc73c\ub85c",
           "en": "Forward"
         }
       },
       {
         "name": "reload",
         "title": {
-          "ko": "새로고침",
+          "ko": "\uc0c8\ub85c\uace0\uce68",
           "en": "Reload"
         }
       },
       {
         "name": "stop",
         "title": {
-          "ko": "정지",
+          "ko": "\uc815\uc9c0",
           "en": "Stop"
         }
       },
       {
         "name": "home",
         "title": {
-          "ko": "홈",
+          "ko": "\ud648",
           "en": "Home"
         }
       },
       {
         "name": "open",
         "title": {
-          "ko": "새 탭 열기",
+          "ko": "\uc0c8 \ud0ed \uc5f4\uae30",
           "en": "Open a new tab"
         }
       },
       {
         "name": "stats",
         "title": {
-          "ko": "엔진 서피스 진단",
+          "ko": "\uc5d4\uc9c4 \uc11c\ud53c\uc2a4 \uc9c4\ub2e8",
           "en": "Engine surface diagnostics"
         }
       },
       {
         "name": "surface.close",
-        "title": "엔진 서피스 닫기(진단)"
+        "title": "\uc5d4\uc9c4 \uc11c\ud53c\uc2a4 \ub2eb\uae30(\uc9c4\ub2e8)"
       },
       {
         "name": "eval",
-        "title": "페이지 JS 실행",
+        "title": "\ud398\uc774\uc9c0 JS \uc2e4\ud589",
         "danger": "inject"
       },
       {
         "name": "dom.text",
-        "title": "페이지 텍스트"
+        "title": "\ud398\uc774\uc9c0 \ud14d\uc2a4\ud2b8"
       },
       {
         "name": "dom.html",
-        "title": "페이지 HTML"
+        "title": "\ud398\uc774\uc9c0 HTML"
       },
       {
         "name": "dom.query",
-        "title": "요소 조회"
+        "title": "\uc694\uc18c \uc870\ud68c"
       },
       {
         "name": "dom.click",
-        "title": "요소 클릭",
+        "title": "\uc694\uc18c \ud074\ub9ad",
         "danger": "inject"
       },
       {
         "name": "dom.fill",
-        "title": "입력 채우기",
+        "title": "\uc785\ub825 \ucc44\uc6b0\uae30",
         "danger": "inject"
       },
       {
         "name": "dom.submit",
-        "title": "폼 제출",
+        "title": "\ud3fc \uc81c\ucd9c",
         "danger": "inject"
       },
       {
         "name": "dom.wait-for",
-        "title": "요소 대기"
+        "title": "\uc694\uc18c \ub300\uae30"
       }
     ],
     "nodes": [
       {
         "id": "back",
         "description": {
-          "ko": "뒤로",
+          "ko": "\ub4a4\ub85c",
           "en": "Back"
         }
       },
       {
         "id": "forward",
         "description": {
-          "ko": "앞으로",
+          "ko": "\uc55e\uc73c\ub85c",
           "en": "Forward"
         }
       },
       {
         "id": "reload",
         "description": {
-          "ko": "새로고침/정지 토글",
+          "ko": "\uc0c8\ub85c\uace0\uce68/\uc815\uc9c0 \ud1a0\uae00",
           "en": "Reload/stop toggle"
         }
       },
       {
         "id": "home",
         "description": {
-          "ko": "홈",
+          "ko": "\ud648",
           "en": "Home"
         }
       },
       {
         "id": "urlbar",
         "description": {
-          "ko": "주소 입력",
+          "ko": "\uc8fc\uc18c \uc785\ub825",
           "en": "URL input"
         }
       },
       {
         "id": "go",
         "description": {
-          "ko": "이동",
+          "ko": "\uc774\ub3d9",
           "en": "Navigate"
         }
       },
       {
         "id": "progress",
         "description": {
-          "ko": "로딩 진행 바",
+          "ko": "\ub85c\ub529 \uc9c4\ud589 \ubc14",
           "en": "Loading progress bar"
         }
       },
       {
         "id": "offscreen-cell",
         "description": {
-          "ko": "offscreen 렌더 셀",
+          "ko": "offscreen \ub80c\ub354 \uc140",
           "en": "Offscreen render cell"
         }
       }
