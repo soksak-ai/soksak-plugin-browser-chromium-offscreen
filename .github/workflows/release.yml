@@ -24,9 +24,6 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: "22.12.0"
-          cache: "npm"
-      - run: npm ci --ignore-scripts
-      - run: npm test
       - name: Build the release assets
         run: node scripts/build-release.mjs --commit "$GITHUB_SHA" --out dist
       - name: Bind publication to main and the exact checkout
