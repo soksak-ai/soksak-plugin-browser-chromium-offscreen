@@ -2,13 +2,13 @@
   "spec": "soksak-spec-plugin@0.0.1",
   "id": "soksak-plugin-browser-chromium-offscreen",
   "name": {
-    "ko": "\ube0c\ub77c\uc6b0\uc800 (Chromium offscreen)",
+    "ko": "브라우저 (Chromium offscreen)",
     "en": "Browser (Chromium offscreen)"
   },
   "version": "0.0.1",
   "description": {
-    "ko": "Chromium \uc5d4\uc9c4\uc744 offscreen \ubaa8\ub4dc\ub85c \uad6c\ub3d9\ud574 \uacf5\uc720 \ud14d\uc2a4\ucc98\ub97c \ucf54\uc5b4 \uc18c\uc720 \ub808\uc774\uc5b4\uc5d0 \uadf8\ub9ac\ub294 \ube0c\ub77c\uc6b0\uc800. \ucc3d \uc5c6\uc774 \uadf8\ub824 \uc140 \uc548\uc5d0 \ud569\uc131\ub418\uba70 \uc785\ub825(\ub9c8\uc6b0\uc2a4/\ud720/\ud0a4/\ud55c\uae00 IME)\uc740 DOM \uc140\uc774 \ubc1b\uc544 \ud3ec\uc6cc\ub529\ud55c\ub2e4. windowed browser-chromium \uacfc \uac19\uc740 \uc5d4\uc9c4\u00b7\ud504\ub85c\ud1a0\ucf5c.",
-    "en": "A browser that drives the Chromium engine in offscreen mode \u2014 shared texture painted into a core-owned layer, composited inside the cell. The DOM cell owns input and forwards it (mouse/wheel/key/Korean IME). Same engine and protocol as windowed browser-chromium."
+    "ko": "Chromium 엔진을 offscreen 모드로 구동해 공유 텍스처를 코어 소유 레이어에 그리는 브라우저. 창 없이 그려 셀 안에 합성되며 입력(마우스/휠/키/한글 IME)은 DOM 셀이 받아 포워딩한다. windowed browser-chromium 과 같은 엔진·프로토콜.",
+    "en": "A browser that drives the Chromium engine in offscreen mode — shared texture painted into a core-owned layer, composited inside the cell. The DOM cell owns input and forwards it (mouse/wheel/key/Korean IME). Same engine and protocol as windowed browser-chromium."
   },
   "entry": "main.js",
   "implements": [
@@ -39,11 +39,11 @@
       "type": "string",
       "default": "https://example.com",
       "title": {
-        "ko": "\uc2dc\uc791 URL",
+        "ko": "시작 URL",
         "en": "Start URL"
       },
       "description": {
-        "ko": "\uc0c8 offscreen \ube0c\ub77c\uc6b0\uc800 \ud0ed\uc774 \ucc98\uc74c \uc5ec\ub294 \uc8fc\uc18c.",
+        "ko": "새 offscreen 브라우저 탭이 처음 여는 주소.",
         "en": "Address a new offscreen browser tab opens to."
       }
     },
@@ -56,21 +56,21 @@
       ],
       "enumLabels": [
         {
-          "ko": "\uc0c8 \ud0ed",
+          "ko": "새 탭",
           "en": "New tab"
         },
         {
-          "ko": "\uc0c8 \ucc3d",
+          "ko": "새 창",
           "en": "New window"
         }
       ],
       "default": "tab",
       "title": {
-        "ko": "\uc0c8 \ub9c1\ud06c \uc5f4\uae30",
+        "ko": "새 링크 열기",
         "en": "Open new links in"
       },
       "description": {
-        "ko": "target=_blank / window.open \ub9c1\ud06c\ub97c \uc0c8 \ud0ed(\uc778\uc571 \ubdf0)\uc73c\ub85c \uc5f4\uc9c0 \uc0c8 \ucc3d(\ub3c5\ub9bd OS \ucc3d)\uc73c\ub85c \uc5f4\uc9c0.",
+        "ko": "target=_blank / window.open 링크를 새 탭(인앱 뷰)으로 열지 새 창(독립 OS 창)으로 열지.",
         "en": "Open target=_blank / window.open links as a new tab (in-app view) or an independent OS window."
       }
     }
@@ -80,10 +80,10 @@
       {
         "id": "content",
         "title": {
-          "ko": "\ube0c\ub77c\uc6b0\uc800 (Chromium offscreen)",
+          "ko": "브라우저 (Chromium offscreen)",
           "en": "Browser (Chromium offscreen)"
         },
-        "icon": "\u25ce",
+        "icon": "◎",
         "placements": [
           "content"
         ],
@@ -92,18 +92,36 @@
         "status": [
           "loading",
           "error"
-        ]
+        ],
+        "sidebar": {
+          "left": [
+            {
+              "contract": "soksak-spec-plugin-sidebar-bookmarks",
+              "range": "^0.0.1",
+              "view": "list",
+              "instance": "shared"
+            }
+          ],
+          "right": [
+            {
+              "contract": "soksak-spec-plugin-sidebar-dom-picker",
+              "range": "^0.0.1",
+              "view": "selections",
+              "instance": "shared"
+            }
+          ]
+        }
       }
     ],
     "programs": [
       {
         "id": "browser-chromium-offscreen",
         "title": {
-          "ko": "\ube0c\ub77c\uc6b0\uc800 (Chromium offscreen)",
+          "ko": "브라우저 (Chromium offscreen)",
           "en": "Browser (Chromium offscreen)"
         },
         "path": {
-          "ko": "\ube0c\ub77c\uc6b0\uc800",
+          "ko": "브라우저",
           "en": "Browser"
         },
         "kind": "view",
@@ -114,164 +132,174 @@
       {
         "name": "ping",
         "title": {
-          "ko": "\ud50c\ub7ec\uadf8\uc778 \uc801\uc7ac/\ubc84\uc804 \ud655\uc778(E2E)",
+          "ko": "플러그인 적재/버전 확인(E2E)",
           "en": "Ping (load/version check)"
         }
       },
       {
         "name": "navigate",
         "title": {
-          "ko": "URL \uc774\ub3d9",
+          "ko": "URL 이동",
           "en": "Navigate to URL"
         }
       },
       {
         "name": "back",
         "title": {
-          "ko": "\ub4a4\ub85c",
+          "ko": "뒤로",
           "en": "Back"
         }
       },
       {
         "name": "forward",
         "title": {
-          "ko": "\uc55e\uc73c\ub85c",
+          "ko": "앞으로",
           "en": "Forward"
         }
       },
       {
         "name": "reload",
         "title": {
-          "ko": "\uc0c8\ub85c\uace0\uce68",
+          "ko": "새로고침",
           "en": "Reload"
         }
       },
       {
         "name": "stop",
         "title": {
-          "ko": "\uc815\uc9c0",
+          "ko": "정지",
           "en": "Stop"
         }
       },
       {
         "name": "home",
         "title": {
-          "ko": "\ud648",
+          "ko": "홈",
           "en": "Home"
         }
       },
       {
         "name": "open",
         "title": {
-          "ko": "\uc0c8 \ud0ed \uc5f4\uae30",
+          "ko": "새 탭 열기",
           "en": "Open a new tab"
         }
       },
       {
         "name": "stats",
         "title": {
-          "ko": "\uc5d4\uc9c4 \uc11c\ud53c\uc2a4 \uc9c4\ub2e8",
+          "ko": "엔진 서피스 진단",
           "en": "Engine surface diagnostics"
         }
       },
       {
         "name": "surface.close",
-        "title": "\uc5d4\uc9c4 \uc11c\ud53c\uc2a4 \ub2eb\uae30(\uc9c4\ub2e8)"
+        "title": "엔진 서피스 닫기(진단)"
       },
       {
         "name": "eval",
-        "title": "\ud398\uc774\uc9c0 JS \uc2e4\ud589",
+        "title": "페이지 JS 실행",
         "danger": "inject"
       },
       {
         "name": "dom.text",
-        "title": "\ud398\uc774\uc9c0 \ud14d\uc2a4\ud2b8"
+        "title": "페이지 텍스트"
       },
       {
         "name": "dom.html",
-        "title": "\ud398\uc774\uc9c0 HTML"
+        "title": "페이지 HTML"
       },
       {
         "name": "dom.query",
-        "title": "\uc694\uc18c \uc870\ud68c"
+        "title": "요소 조회"
       },
       {
         "name": "dom.click",
-        "title": "\uc694\uc18c \ud074\ub9ad",
+        "title": "요소 클릭",
         "danger": "inject"
       },
       {
         "name": "dom.fill",
-        "title": "\uc785\ub825 \ucc44\uc6b0\uae30",
+        "title": "입력 채우기",
         "danger": "inject"
       },
       {
         "name": "dom.submit",
-        "title": "\ud3fc \uc81c\ucd9c",
+        "title": "폼 제출",
         "danger": "inject"
       },
       {
         "name": "dom.wait-for",
-        "title": "\uc694\uc18c \ub300\uae30"
+        "title": "요소 대기"
       }
     ],
     "nodes": [
       {
         "id": "back",
         "description": {
-          "ko": "\ub4a4\ub85c",
+          "ko": "뒤로",
           "en": "Back"
         }
       },
       {
         "id": "forward",
         "description": {
-          "ko": "\uc55e\uc73c\ub85c",
+          "ko": "앞으로",
           "en": "Forward"
         }
       },
       {
         "id": "reload",
         "description": {
-          "ko": "\uc0c8\ub85c\uace0\uce68/\uc815\uc9c0 \ud1a0\uae00",
+          "ko": "새로고침/정지 토글",
           "en": "Reload/stop toggle"
         }
       },
       {
         "id": "home",
         "description": {
-          "ko": "\ud648",
+          "ko": "홈",
           "en": "Home"
         }
       },
       {
         "id": "urlbar",
         "description": {
-          "ko": "\uc8fc\uc18c \uc785\ub825",
+          "ko": "주소 입력",
           "en": "URL input"
         }
       },
       {
         "id": "go",
         "description": {
-          "ko": "\uc774\ub3d9",
+          "ko": "이동",
           "en": "Navigate"
         }
       },
       {
         "id": "progress",
         "description": {
-          "ko": "\ub85c\ub529 \uc9c4\ud589 \ubc14",
+          "ko": "로딩 진행 바",
           "en": "Loading progress bar"
         }
       },
       {
         "id": "offscreen-cell",
         "description": {
-          "ko": "offscreen \ub80c\ub354 \uc140",
+          "ko": "offscreen 렌더 셀",
           "en": "Offscreen render cell"
         }
       }
     ]
-  }
+  },
+  "consumes": [
+    {
+      "id": "soksak-spec-plugin-sidebar-bookmarks",
+      "range": "^0.0.1"
+    },
+    {
+      "id": "soksak-spec-plugin-sidebar-dom-picker",
+      "range": "^0.0.1"
+    }
+  ]
 }
