@@ -67,7 +67,12 @@ interface ViewContext {
   // 뷰 status 축 보고 — {code,message} 또는 상태 없음(null). 사이드바 배치면 no-op(viewId null).
   setStatus?: (status: { code: string; message?: string } | null) => void;
 }
-interface ViewProvider { mount(container: HTMLElement, ctx: ViewContext): void; unmount?(container: HTMLElement): void }
+interface ViewProvider {
+  mount(container: HTMLElement, ctx: ViewContext): void;
+  unmount?(container: HTMLElement): void;
+  /** 줌 인텐트(코어 PLUGIN-CONTRACT §Zoom, 선택) — 페이지 줌으로 응답. */
+  zoom?(container: HTMLElement, ctx: ViewContext, action: "in" | "out" | "reset"): void;
+}
 interface PluginContext { app: PluginApi; subscriptions: { push(d: Disposable): void } }
 
 // ── 헬퍼 ─────────────────────────────────────────────────────────────────────────────────────
@@ -88,6 +93,9 @@ interface ViewEntry {
   teardown: () => void; // 서피스 close + 옵서버 해제 — 재mount/unmount 에서 멱등 호출
 }
 const views = new Map<string, ViewEntry>();
+// 줌 합성 상태(§Zoom) — 창 배율(window.zoom 이벤트 캐시) × 뷰 배율. 유효 배율은 사이드카 zoom op 소비.
+const pageZoom = new Map<string, number>();
+let windowZoomFactor = 1;
 // mount 재부착 판정 기록(진단 — stats 로 노출). 재부착 실패 원인 계측용.
 const MOUNT_DECISIONS: Array<{ viewId: string; prior: number | null; alive: number[]; aliveOk: boolean }> = [];
 let activeViewId: string | null = null;
@@ -705,6 +713,19 @@ export function activate(ctx: PluginContext): void {
 
       (container as unknown as { __offscreenCleanup?: () => void }).__offscreenCleanup = teardown;
     },
+    zoom(_container, vctx, action) {
+      const viewId = vctx.viewId;
+      if (!viewId) return;
+      const e = views.get(viewId);
+      if (!e || e.surfaceId == null) return;
+      const cur = pageZoom.get(viewId) ?? 1;
+      const next =
+        action === "reset"
+          ? 1
+          : Math.max(0.25, Math.min(4, Math.round((cur + (action === "in" ? 0.1 : -0.1)) * 100) / 100));
+      pageZoom.set(viewId, next);
+      void send({ type: "zoom", id: e.surfaceId, factor: windowZoomFactor * next });
+    },
     unmount(container) {
       const c = container as unknown as { __offscreenCleanup?: () => void };
       c.__offscreenCleanup?.();
@@ -713,6 +734,16 @@ export function activate(ctx: PluginContext): void {
   };
 
   ctx.subscriptions.push(app.ui.registerView("content", provider));
+  // 창 줌 방송 소비 — 전 라이브 서피스에 합성 배율 재적용(§Zoom).
+  ctx.subscriptions.push(
+    app.events.on("window.zoom", (p) => {
+      windowZoomFactor = Number((p as { factor?: number }).factor ?? 1) || 1;
+      for (const [viewId, e] of views) {
+        if (e.surfaceId == null) continue;
+        void send({ type: "zoom", id: e.surfaceId, factor: windowZoomFactor * (pageZoom.get(viewId) ?? 1) });
+      }
+    }),
+  );
 }
 
 export default { activate };

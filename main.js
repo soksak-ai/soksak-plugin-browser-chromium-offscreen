@@ -430,6 +430,8 @@ function measureRect(el) {
   return { x, y, w: Math.max(1, Math.floor(r.right) - x), h: Math.max(1, Math.floor(r.bottom) - y) };
 }
 var views = /* @__PURE__ */ new Map();
+var pageZoom = /* @__PURE__ */ new Map();
+var windowZoomFactor = 1;
 var MOUNT_DECISIONS = [];
 var activeViewId = null;
 var lastMountedViewId = null;
@@ -1021,6 +1023,16 @@ function activate(ctx) {
       })();
       container.__offscreenCleanup = teardown;
     },
+    zoom(_container, vctx, action) {
+      const viewId = vctx.viewId;
+      if (!viewId) return;
+      const e = views.get(viewId);
+      if (!e || e.surfaceId == null) return;
+      const cur = pageZoom.get(viewId) ?? 1;
+      const next = action === "reset" ? 1 : Math.max(0.25, Math.min(4, Math.round((cur + (action === "in" ? 0.1 : -0.1)) * 100) / 100));
+      pageZoom.set(viewId, next);
+      void send({ type: "zoom", id: e.surfaceId, factor: windowZoomFactor * next });
+    },
     unmount(container) {
       const c = container;
       c.__offscreenCleanup?.();
@@ -1028,6 +1040,15 @@ function activate(ctx) {
     }
   };
   ctx.subscriptions.push(app.ui.registerView("content", provider));
+  ctx.subscriptions.push(
+    app.events.on("window.zoom", (p) => {
+      windowZoomFactor = Number(p.factor ?? 1) || 1;
+      for (const [viewId, e] of views) {
+        if (e.surfaceId == null) continue;
+        void send({ type: "zoom", id: e.surfaceId, factor: windowZoomFactor * (pageZoom.get(viewId) ?? 1) });
+      }
+    })
+  );
 }
 var plugin_entry_default = { activate };
 export {
