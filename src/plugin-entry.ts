@@ -620,8 +620,14 @@ export function activate(ctx: PluginContext): void {
           if (visible) { lastKey = ""; arm(); }
         });
         io.observe(cell);
+        // 위치-전용 이동은 ResizeObserver/IO 어느 쪽도 발화하지 않는다(크기·가시성 불변) —
+        // focus-near 스왑 후 레이어가 옛 좌표에 좌초해 새 자리가 검게 비던 결함의 원인.
+        // 코어 표준 신호 두 개가 그 축을 소유한다: layout.reflow(커밋 후 재스냅) +
+        // layout.resize-gesture(모션 위상 — tick 이 안정될 때까지 자체 연장돼 추종이 된다).
+        const offReflow = app.events.on("layout.reflow", () => { lastKey = ""; arm(); });
+        const offMotion = app.events.on("layout.resize-gesture", () => { lastKey = ""; arm(); });
         arm();
-        return () => { offPark.dispose(); ro.disconnect(); io.disconnect(); window.removeEventListener("resize", arm); if (raf) cancelAnimationFrame(raf); };
+        return () => { offPark.dispose(); offReflow.dispose(); offMotion.dispose(); ro.disconnect(); io.disconnect(); window.removeEventListener("resize", arm); if (raf) cancelAnimationFrame(raf); };
       }
 
       // ── 재부착 후보 — 이전 인스턴스/이전 mount 가 이 viewId 로 만든 서피스(페이지 상태 보존).

@@ -923,9 +923,19 @@ function activate(ctx) {
           }
         });
         io.observe(cell);
+        const offReflow = app.events.on("layout.reflow", () => {
+          lastKey = "";
+          arm();
+        });
+        const offMotion = app.events.on("layout.resize-gesture", () => {
+          lastKey = "";
+          arm();
+        });
         arm();
         return () => {
           offPark.dispose();
+          offReflow.dispose();
+          offMotion.dispose();
           ro.disconnect();
           io.disconnect();
           window.removeEventListener("resize", arm);
