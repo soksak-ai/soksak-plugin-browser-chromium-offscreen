@@ -273,13 +273,13 @@ function btn(node, label, title) {
   b.setAttribute("data-node", node);
   b.textContent = label;
   b.title = title;
-  b.style.cssText = "flex:0 0 auto;width:30px;height:30px;border-radius:6px;border:0;background:var(--inset);color:var(--fg);font:15px system-ui;cursor:pointer";
+  b.style.cssText = "flex:0 0 auto;width:26px;height:22px;border-radius:6px;border:0;background:var(--inset);color:var(--fg);font:13px system-ui;cursor:pointer";
   return b;
 }
 function createBrowserToolbar(container, cb) {
   const bar = document.createElement("div");
   bar.setAttribute("data-node", "toolbar");
-  bar.style.cssText = "position:relative;display:flex;gap:4px;padding:6px;flex:0 0 auto;align-items:center;background:var(--side);border-bottom:1px solid var(--bd)";
+  bar.style.cssText = "position:relative;display:flex;gap:4px;flex:0 0 auto;align-items:center;height:var(--toolbar-h,28px);padding:0 var(--toolbar-pad-x,8px);background:var(--side);border-bottom:1px solid var(--bd)";
   const back = btn("back", "\u2039", "\uB4A4\uB85C");
   const forward = btn("forward", "\u203A", "\uC55E\uC73C\uB85C");
   const reload = btn("reload", "\u27F3", "\uC0C8\uB85C\uACE0\uCE68");
@@ -288,7 +288,7 @@ function createBrowserToolbar(container, cb) {
   url.setAttribute("data-node", "urlbar");
   url.type = "text";
   url.placeholder = "URL \uB610\uB294 \uAC80\uC0C9\uC5B4";
-  url.style.cssText = "flex:1 1 auto;padding:6px 10px;border-radius:6px;border:1px solid var(--bd);background:var(--inset);color:var(--fg);font:13px system-ui";
+  url.style.cssText = "flex:1 1 auto;height:22px;box-sizing:border-box;padding:0 10px;border-radius:6px;border:1px solid var(--bd);background:var(--inset);color:var(--fg);font:12px system-ui";
   const go = btn("go", "\u21B5", "\uC774\uB3D9");
   go.style.background = "var(--acc)";
   go.style.color = "var(--bg)";
