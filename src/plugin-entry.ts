@@ -736,9 +736,11 @@ export function activate(ctx: PluginContext): void {
               }
               return -1;
             };
-            // 연결 수립은 유한 재시도(최대 6회, 선형 백오프) — 부팅 직후 웹뷰 네트워크
-            // 프로세스가 loopback fetch 를 일과성으로 거절하는 실측(Load failed) 견고화.
-            // 성공 후 파싱 루프는 재시도 대상이 아니다(서버 FIN = 종료 상태로 기록).
+            // 연결 수립은 시간-유계 재시도(마운트 후 90초 지평, 2초 간격) — 부팅 직후 웹뷰
+            // 네트워크 프로세스가 loopback fetch 를 수 초간 거절하는 실측(Load failed) 견고화.
+            // 지평 소진 = 종료(무한 재시도 아님). 성공 후 파싱 루프는 재시도 대상이 아니다.
+            const RETRY_HORIZON_MS = 90_000;
+            const t0 = Date.now();
             const run = async (attempt: number): Promise<void> => {
               cell.dataset.osrAttempt = String(attempt);
               let gotFrame = false;
@@ -791,9 +793,11 @@ export function activate(ctx: PluginContext): void {
                 cell.dataset.osrStream = `error:${e instanceof Error ? e.name + ":" + e.message : String(e)}`;
                 const next = gotFrame ? 1 : attempt + 1;
                 const retriable =
-                  !disposed && entry.domFrame === img && !ctl.signal.aborted && next <= 6 &&
+                  !disposed && entry.domFrame === img && !ctl.signal.aborted &&
+                  Date.now() - t0 < RETRY_HORIZON_MS &&
                   cell.dataset.osrStream !== "server-closed";
-                if (retriable) setTimeout(() => void run(next), 250 * next);
+                if (retriable) setTimeout(() => void run(next), gotFrame ? 250 : 2000);
+                else cell.dataset.osrStream += ";gave-up";
               }
             };
             void run(1);
