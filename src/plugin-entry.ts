@@ -88,7 +88,8 @@ function measureRect(el: HTMLElement): { x: number; y: number; w: number; h: num
 interface ViewEntry {
   viewId: string;
   surfaceId: number | null;
-  domFrame?: HTMLImageElement; // DOM 프레젠터(스파이크) — MJPEG <img>, teardown 시 회수
+  domFrame?: HTMLImageElement; // DOM 프레젠터(스파이크) — 프레임 <img>, teardown 시 회수
+  domFrameStop?: () => void; // DOM 프레젠터 스트림 중단(fetch abort + objectURL 회수)
   getUrl: () => string;
   navigate: (url: string) => void;
   teardown: () => void; // 서피스 close + 옵서버 해제 — 재mount/unmount 에서 멱등 호출
@@ -545,6 +546,8 @@ export function activate(ctx: PluginContext): void {
         stopFollow?.();
         // DOM 프레젠터 회수(스파이크) — 스트림 off + img 제거(연결 FIN 이 서버 쪽 구독도 정리).
         if (entry.domFrame) {
+          entry.domFrameStop?.();
+          entry.domFrameStop = undefined;
           entry.domFrame.remove();
           entry.domFrame = undefined;
           if (surfaceId != null) void send({ type: "frame-stream", id: surfaceId, enable: false });
@@ -710,9 +713,62 @@ export function activate(ctx: PluginContext): void {
             img.className = "osr-dom-frame";
             img.style.cssText =
               "position:absolute;inset:0;width:100%;height:100%;object-fit:fill;pointer-events:none;z-index:1;";
-            img.src = `http://127.0.0.1:${port}/s/${id}`;
             cell.appendChild(img);
             entry.domFrame = img;
+            // WebKit 은 <img> 의 multipart/x-mixed-replace 를 디코드하지 않는다(Blink 전용) —
+            // fetch 스트림에서 파트 경계를 직접 파싱해 파트마다 Blob objectURL 로 img 를
+            // 갈아끼운다. 연결 1개, 파트 도착 = 프레임 교체(latest-wins) — 폴링 아님.
+            const ctl = new AbortController();
+            let lastUrl = "";
+            entry.domFrameStop = () => {
+              ctl.abort();
+              if (lastUrl) URL.revokeObjectURL(lastUrl);
+              lastUrl = "";
+            };
+            const findSeq = (buf: Uint8Array, seq: number[], from: number): number => {
+              outer: for (let i = from; i + seq.length <= buf.length; i++) {
+                for (let j = 0; j < seq.length; j++) if (buf[i + j] !== seq[j]) continue outer;
+                return i;
+              }
+              return -1;
+            };
+            void (async () => {
+              try {
+                const res = await fetch(`http://127.0.0.1:${port}/s/${id}`, { signal: ctl.signal });
+                const reader = res.body?.getReader();
+                if (!reader) return;
+                let buf = new Uint8Array(0);
+                for (;;) {
+                  const { done, value } = await reader.read();
+                  if (done) break;
+                  const merged = new Uint8Array(buf.length + value.length);
+                  merged.set(buf);
+                  merged.set(value, buf.length);
+                  buf = merged;
+                  for (;;) {
+                    const he = findSeq(buf, [13, 10, 13, 10], 0);
+                    if (he < 0) break;
+                    const head = new TextDecoder().decode(buf.subarray(0, he));
+                    const m = /Content-Length:\s*(\d+)/i.exec(head);
+                    if (!m) {
+                      buf = buf.slice(he + 4);
+                      continue;
+                    }
+                    const len = Number(m[1]);
+                    if (buf.length < he + 4 + len) break;
+                    const jpeg = buf.slice(he + 4, he + 4 + len);
+                    buf = buf.slice(he + 4 + len);
+                    if (disposed || entry.domFrame !== img) return;
+                    const url = URL.createObjectURL(new Blob([jpeg], { type: "image/jpeg" }));
+                    img.src = url;
+                    if (lastUrl) URL.revokeObjectURL(lastUrl);
+                    lastUrl = url;
+                  }
+                }
+              } catch {
+                /* abort/서버 종료 — teardown 경로가 정리한다 */
+              }
+            })();
           });
         }
         const h = await engine();
