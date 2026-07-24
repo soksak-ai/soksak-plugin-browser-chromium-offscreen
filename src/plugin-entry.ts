@@ -635,9 +635,17 @@ export function activate(ctx: PluginContext): void {
         // 코어 표준 신호 두 개가 그 축을 소유한다: layout.reflow(커밋 후 재스냅) +
         // layout.resize-gesture(모션 위상 — tick 이 안정될 때까지 자체 연장돼 추종이 된다).
         const offReflow = app.events.on("layout.reflow", () => { lastKey = ""; arm(); });
+        // 코어 슬롯 동결(§4.6)의 표면 가림 릴레이 — 스탠드인이 선 동안만 서피스를 숨긴다
+        // (view.parked 와 동형). 해동의 hidden:false 는 엔진의 전면 재페인트 경로를 태워
+        // 착지 프레임이 신선하다.
+        const offVeil = app.events.on("view.veiled", (p) => {
+          const q = p as { viewId?: string; veiled?: boolean };
+          if (q.viewId !== viewId) return;
+          void send({ type: "hidden", id, hidden: !!q.veiled });
+        });
         const offMotion = app.events.on("layout.resize-gesture", () => { lastKey = ""; arm(); });
         arm();
-        return () => { offPark.dispose(); offReflow.dispose(); offMotion.dispose(); ro.disconnect(); io.disconnect(); window.removeEventListener("resize", arm); if (raf) cancelAnimationFrame(raf); };
+        return () => { offPark.dispose(); offReflow.dispose(); offMotion.dispose(); offVeil.dispose(); ro.disconnect(); io.disconnect(); window.removeEventListener("resize", arm); if (raf) cancelAnimationFrame(raf); };
       }
 
       // ── 재부착 후보 — 이전 인스턴스/이전 mount 가 이 viewId 로 만든 서피스(페이지 상태 보존).
