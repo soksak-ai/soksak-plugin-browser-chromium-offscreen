@@ -88,6 +88,7 @@ function measureRect(el: HTMLElement): { x: number; y: number; w: number; h: num
 interface ViewEntry {
   viewId: string;
   surfaceId: number | null;
+  domFrame?: HTMLImageElement; // DOM 프레젠터(스파이크) — MJPEG <img>, teardown 시 회수
   getUrl: () => string;
   navigate: (url: string) => void;
   teardown: () => void; // 서피스 close + 옵서버 해제 — 재mount/unmount 에서 멱등 호출
@@ -542,6 +543,12 @@ export function activate(ctx: PluginContext): void {
         if (activeViewId === viewId) activeViewId = null;
         stopInput?.();
         stopFollow?.();
+        // DOM 프레젠터 회수(스파이크) — 스트림 off + img 제거(연결 FIN 이 서버 쪽 구독도 정리).
+        if (entry.domFrame) {
+          entry.domFrame.remove();
+          entry.domFrame = undefined;
+          if (surfaceId != null) void send({ type: "frame-stream", id: surfaceId, enable: false });
+        }
         if (surfaceId != null) {
           const id = surfaceId;
           // 즉시 숨김(탭은 닫힌 확정 상태 — 서피스가 화면에 남으면 안 된다) 후 close 는 디바운스:
@@ -690,6 +697,24 @@ export function activate(ctx: PluginContext): void {
         void send({ type: "popup-mode", asWindow: newWindowMode() });
         stopFollow = follow(id);
         stopInput = forwardInput(cell, (m) => void send({ ...m, id }));
+        // ── DOM 프레젠터(스파이크, 설정 domPresenter=true 일 때만) ──
+        // 엔진 프레임을 MJPEG <img> 로 슬롯 안에 세운다 — 브라우저 표면이 진짜 DOM 요소가
+        // 되어 이동·z·클립이 웹뷰 컴포지터 소유(두-컴포지터 이음새 범주의 구조적 제거 실험).
+        // 네이티브 레이어는 그대로 두되 img(불투명)가 홀을 덮어 시각적으로 대체된다.
+        // 판정(사용자 기준): 매끄럽지 않으면 실패 프리픽스 보존 후 폐기.
+        if (app.settings?.get("domPresenter") === true || String(app.settings?.get("domPresenter")) === "true") {
+          void send({ type: "frame-stream", id, enable: true }).then((r) => {
+            const port = r && typeof (r as { port?: number }).port === "number" ? (r as { port: number }).port : 0;
+            if (!port || disposed || views.get(viewId) !== entry) return;
+            const img = document.createElement("img");
+            img.className = "osr-dom-frame";
+            img.style.cssText =
+              "position:absolute;inset:0;width:100%;height:100%;object-fit:fill;pointer-events:none;z-index:1;";
+            img.src = `http://127.0.0.1:${port}/s/${id}`;
+            cell.appendChild(img);
+            entry.domFrame = img;
+          });
+        }
         const h = await engine();
         h.on("nav", (p) => { if (p.id === id && typeof p.url === "string") setUrlBar(p.url); });
         h.on("title", (p) => { if (p.id === id && typeof p.title === "string") vctx.setTitle?.(p.title); });
