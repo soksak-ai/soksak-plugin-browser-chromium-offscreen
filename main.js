@@ -1,4 +1,4 @@
-// ../../../.soksak-dev/kits/soksak-kit-browser-common/src/url.ts
+// ../../kits/soksak-kit-browser-common/src/url.ts
 function normalizeUrl(raw) {
   const s = raw.trim();
   if (!s) return "about:blank";
@@ -7,7 +7,7 @@ function normalizeUrl(raw) {
   return `https://www.google.com/search?q=${encodeURIComponent(s)}`;
 }
 
-// ../../../.soksak-dev/kits/soksak-kit-browser-common/src/nav-state.ts
+// ../../kits/soksak-kit-browser-common/src/nav-state.ts
 var initialNavState = { loading: false, canBack: false, canForward: false };
 function renderNavState(s) {
   return {
@@ -20,7 +20,7 @@ function renderNavState(s) {
   };
 }
 
-// ../../../.soksak-dev/kits/soksak-kit-browser-common/src/lifecycle.ts
+// ../../kits/soksak-kit-browser-common/src/lifecycle.ts
 function createLifecycle(opts) {
   const LEDGER = `${opts.storagePrefix}-created`;
   const BYVIEW = `${opts.storagePrefix}-byview`;
@@ -112,7 +112,7 @@ function createLifecycle(opts) {
   };
 }
 
-// ../../../.soksak-dev/kits/soksak-kit-browser-common/src/input-forward.ts
+// ../../kits/soksak-kit-browser-common/src/input-forward.ts
 function modsOf(e) {
   return (e.shiftKey ? 1 : 0) | (e.ctrlKey ? 2 : 0) | (e.altKey ? 4 : 0) | (e.metaKey ? 8 : 0);
 }
@@ -266,7 +266,7 @@ function forwardInput(container, send) {
   };
 }
 
-// ../../../.soksak-dev/kits/soksak-kit-browser-common/src/toolbar.ts
+// ../../kits/soksak-kit-browser-common/src/toolbar.ts
 function btn(node, label, title) {
   const b = document.createElement("button");
   b.type = "button";
@@ -353,7 +353,7 @@ function createBrowserToolbar(container, cb) {
   };
 }
 
-// ../../../.soksak-dev/kits/soksak-kit-browser-common/src/dom-snippets.ts
+// ../../kits/soksak-kit-browser-common/src/dom-snippets.ts
 var jsStr = (s) => JSON.stringify(s);
 function domTextBody(selector, maxLength = 2e4) {
   return selector ? `const el = document.querySelector(${jsStr(selector)}); return el ? el.innerText.slice(0, ${maxLength}) : null;` : `return document.body.innerText.slice(0, ${maxLength});`;
@@ -837,6 +837,8 @@ function activate(ctx) {
         stopInput?.();
         stopFollow?.();
         if (entry.domFrame) {
+          entry.domFrameStop?.();
+          entry.domFrameStop = void 0;
           entry.domFrame.remove();
           entry.domFrame = void 0;
           if (surfaceId != null) void send({ type: "frame-stream", id: surfaceId, enable: false });
@@ -932,6 +934,11 @@ function activate(ctx) {
           lastKey = "";
           arm();
         });
+        const offVeil = app.events.on("view.veiled", (p) => {
+          const q = p;
+          if (q.viewId !== viewId) return;
+          void send({ type: "hidden", id, hidden: !!q.veiled });
+        });
         const offMotion = app.events.on("layout.resize-gesture", () => {
           lastKey = "";
           arm();
@@ -941,6 +948,7 @@ function activate(ctx) {
           offPark.dispose();
           offReflow.dispose();
           offMotion.dispose();
+          offVeil.dispose();
           ro.disconnect();
           io.disconnect();
           window.removeEventListener("resize", arm);
@@ -1007,15 +1015,91 @@ function activate(ctx) {
         stopFollow = follow(id);
         stopInput = forwardInput(cell, (m) => void send({ ...m, id }));
         if (app.settings?.get("domPresenter") === true || String(app.settings?.get("domPresenter")) === "true") {
+          cell.dataset.osrStream = "requested";
           void send({ type: "frame-stream", id, enable: true }).then((r) => {
             const port = r && typeof r.port === "number" ? r.port : 0;
-            if (!port || disposed || views.get(viewId) !== entry) return;
+            if (!port || disposed || views.get(viewId) !== entry) {
+              cell.dataset.osrStream = !port ? "no-port" : "stale-mount";
+              return;
+            }
             const img = document.createElement("img");
             img.className = "osr-dom-frame";
             img.style.cssText = "position:absolute;inset:0;width:100%;height:100%;object-fit:fill;pointer-events:none;z-index:1;";
-            img.src = `http://127.0.0.1:${port}/s/${id}`;
             cell.appendChild(img);
             entry.domFrame = img;
+            const ctl = new AbortController();
+            let lastUrl = "";
+            entry.domFrameStop = () => {
+              ctl.abort();
+              if (lastUrl) URL.revokeObjectURL(lastUrl);
+              lastUrl = "";
+            };
+            const findSeq = (buf, seq, from) => {
+              outer: for (let i = from; i + seq.length <= buf.length; i++) {
+                for (let j = 0; j < seq.length; j++) if (buf[i + j] !== seq[j]) continue outer;
+                return i;
+              }
+              return -1;
+            };
+            const RETRY_HORIZON_MS = 9e4;
+            const t0 = Date.now();
+            const run = async (attempt) => {
+              cell.dataset.osrAttempt = String(attempt);
+              let gotFrame = false;
+              try {
+                const res = await fetch(`http://127.0.0.1:${port}/s/${id}`, { signal: ctl.signal });
+                const reader = res.body?.getReader();
+                if (!reader) {
+                  cell.dataset.osrStream = "no-body";
+                  return;
+                }
+                cell.dataset.osrStream = "open";
+                let frames = 0;
+                let buf = new Uint8Array(0);
+                for (; ; ) {
+                  const { done, value } = await reader.read();
+                  if (done) break;
+                  const merged = new Uint8Array(buf.length + value.length);
+                  merged.set(buf);
+                  merged.set(value, buf.length);
+                  buf = merged;
+                  for (; ; ) {
+                    const he = findSeq(buf, [13, 10, 13, 10], 0);
+                    if (he < 0) break;
+                    const head = new TextDecoder().decode(buf.subarray(0, he));
+                    const m = /Content-Length:\s*(\d+)/i.exec(head);
+                    if (!m) {
+                      buf = buf.slice(he + 4);
+                      continue;
+                    }
+                    const len = Number(m[1]);
+                    if (buf.length < he + 4 + len) break;
+                    const jpeg = buf.slice(he + 4, he + 4 + len);
+                    buf = buf.slice(he + 4 + len);
+                    if (!/image\/jpeg/i.test(head)) continue;
+                    if (disposed || entry.domFrame !== img) {
+                      ctl.abort();
+                      return;
+                    }
+                    const url = URL.createObjectURL(new Blob([jpeg], { type: "image/jpeg" }));
+                    img.src = url;
+                    if (lastUrl) URL.revokeObjectURL(lastUrl);
+                    lastUrl = url;
+                    frames += 1;
+                    gotFrame = true;
+                    cell.dataset.osrFrames = String(frames);
+                  }
+                }
+                cell.dataset.osrStream = "server-closed";
+              } catch (e) {
+                cell.dataset.osrStream = `error:${e instanceof Error ? e.name + ":" + e.message : String(e)}`;
+                const next = gotFrame ? 1 : attempt + 1;
+                const retriable = !disposed && entry.domFrame === img && !ctl.signal.aborted && Date.now() - t0 < RETRY_HORIZON_MS && cell.dataset.osrStream !== "server-closed";
+                if (retriable) setTimeout(() => void run(next), gotFrame ? 250 : 2e3);
+                else cell.dataset.osrStream += ";gave-up";
+              }
+            };
+            void run(1);
           });
         }
         const h = await engine();
