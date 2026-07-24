@@ -162,8 +162,18 @@ export function activate(ctx: PluginContext): void {
   // "잡음" = 이번 인스턴스의 뷰가 소유 / 재부착 지도에 대기(remount 가 곧 재부착) / close 디바운스 중.
   // grace 는 복원 remount 의 비동기 재부착이 끝날 시간(너무 일찍 회수하면 살아있는 서피스를 잘못 닫는다).
   const RECONCILE_GRACE_MS = 4000;
+  // 인스턴스 시작 시점의 엔진 소유 스냅샷 — 회수 후보는 이 집합에 한정(이후 태어난 자식은
+  // 이 인스턴스가 절대 회수하지 않는다). 생성이 grace 를 넘기는 느린 부팅에서 스윕이 갓난
+  // 자식을 유령으로 오판·회수하던 레이스의 근치(어댑터 스윕과 동형 원칙).
+  const preexistingP: Promise<Set<number>> = send({ type: "stats" })
+    .then((s) => {
+      const surfaces = (s?.surfaces as Array<{ id: number; owner: string }> | undefined) ?? [];
+      return new Set(surfaces.filter((x) => x.owner === PLUGIN_ID).map((x) => x.id));
+    })
+    .catch(() => new Set<number>());
   const reconcileTimer = setTimeout(() => {
     void (async () => {
+      const preexisting = await preexistingP;
       const stats = await send({ type: "stats" });
       const alive = new Set(((stats?.ids as number[] | undefined) ?? []).map(Number));
       const claimed = new Set<number>([
@@ -174,9 +184,10 @@ export function activate(ctx: PluginContext): void {
       // 회수 근거는 엔진의 소유 기록(stats.surfaces.owner) — 로컬 장부는 유실될 수 있어 근거가
       // 못 된다(실측: 장부 밖 언데드 서피스 잔존). 내 소유이면서 아무도 점유하지 않은 id 만 닫는다.
       const surfaces = stats?.surfaces as Array<{ id: number; owner: string }> | undefined;
-      const reapPool = surfaces
+      const reapPool = (surfaces
         ? surfaces.filter((x) => x.owner === PLUGIN_ID).map((x) => x.id)
-        : lc.ledgerRead(); // 구 엔진 폴백(owner 미지원) — 장부 기반, 장부 밖 언데드는 회수 불가
+        : lc.ledgerRead()
+      ).filter((id) => preexisting.has(id)); // 시작 스냅샷 밖(이후 출생) = 회수 불가침
       if (!surfaces) console.warn("[chromium-offscreen] 엔진이 owner 를 모른다(구 dylib) — 장부 폴백 회수");
       for (const id of reapPool) {
         if (!alive.has(id)) { lc.ledgerRemove(id); continue; } // 엔진에 이미 없음 — 장부만 청소

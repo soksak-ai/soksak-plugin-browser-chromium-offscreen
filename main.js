@@ -479,8 +479,13 @@ function activate(ctx) {
     })
   );
   const RECONCILE_GRACE_MS = 4e3;
+  const preexistingP = send({ type: "stats" }).then((s) => {
+    const surfaces = s?.surfaces ?? [];
+    return new Set(surfaces.filter((x) => x.owner === PLUGIN_ID).map((x) => x.id));
+  }).catch(() => /* @__PURE__ */ new Set());
   const reconcileTimer = setTimeout(() => {
     void (async () => {
+      const preexisting = await preexistingP;
       const stats = await send({ type: "stats" });
       const alive = new Set((stats?.ids ?? []).map(Number));
       const claimed = /* @__PURE__ */ new Set([
@@ -489,7 +494,7 @@ function activate(ctx) {
         ...lc.pendingCloseIds()
       ]);
       const surfaces = stats?.surfaces;
-      const reapPool = surfaces ? surfaces.filter((x) => x.owner === PLUGIN_ID).map((x) => x.id) : lc.ledgerRead();
+      const reapPool = (surfaces ? surfaces.filter((x) => x.owner === PLUGIN_ID).map((x) => x.id) : lc.ledgerRead()).filter((id) => preexisting.has(id));
       if (!surfaces) console.warn("[chromium-offscreen] \uC5D4\uC9C4\uC774 owner \uB97C \uBAA8\uB978\uB2E4(\uAD6C dylib) \u2014 \uC7A5\uBD80 \uD3F4\uBC31 \uD68C\uC218");
       for (const id of reapPool) {
         if (!alive.has(id)) {
