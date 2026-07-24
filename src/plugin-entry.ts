@@ -706,9 +706,13 @@ export function activate(ctx: PluginContext): void {
         // 네이티브 레이어는 그대로 두되 img(불투명)가 홀을 덮어 시각적으로 대체된다.
         // 판정(사용자 기준): 매끄럽지 않으면 실패 프리픽스 보존 후 폐기.
         if (app.settings?.get("domPresenter") === true || String(app.settings?.get("domPresenter")) === "true") {
+          cell.dataset.osrStream = "requested";
           void send({ type: "frame-stream", id, enable: true }).then((r) => {
             const port = r && typeof (r as { port?: number }).port === "number" ? (r as { port: number }).port : 0;
-            if (!port || disposed || views.get(viewId) !== entry) return;
+            if (!port || disposed || views.get(viewId) !== entry) {
+              cell.dataset.osrStream = !port ? "no-port" : "stale-mount";
+              return;
+            }
             const img = document.createElement("img");
             img.className = "osr-dom-frame";
             img.style.cssText =
@@ -732,11 +736,20 @@ export function activate(ctx: PluginContext): void {
               }
               return -1;
             };
-            void (async () => {
+            // 연결 수립은 유한 재시도(최대 6회, 선형 백오프) — 부팅 직후 웹뷰 네트워크
+            // 프로세스가 loopback fetch 를 일과성으로 거절하는 실측(Load failed) 견고화.
+            // 성공 후 파싱 루프는 재시도 대상이 아니다(서버 FIN = 종료 상태로 기록).
+            const run = async (attempt: number): Promise<void> => {
+              cell.dataset.osrAttempt = String(attempt);
               try {
                 const res = await fetch(`http://127.0.0.1:${port}/s/${id}`, { signal: ctl.signal });
                 const reader = res.body?.getReader();
-                if (!reader) return;
+                if (!reader) {
+                  cell.dataset.osrStream = "no-body";
+                  return;
+                }
+                cell.dataset.osrStream = "open";
+                let frames = 0;
                 let buf = new Uint8Array(0);
                 for (;;) {
                   const { done, value } = await reader.read();
@@ -758,17 +771,28 @@ export function activate(ctx: PluginContext): void {
                     if (buf.length < he + 4 + len) break;
                     const jpeg = buf.slice(he + 4, he + 4 + len);
                     buf = buf.slice(he + 4 + len);
-                    if (disposed || entry.domFrame !== img) return;
+                    if (disposed || entry.domFrame !== img) {
+                      ctl.abort(); // 낡은 mount 의 잔류 연결 금지
+                      return;
+                    }
                     const url = URL.createObjectURL(new Blob([jpeg], { type: "image/jpeg" }));
                     img.src = url;
                     if (lastUrl) URL.revokeObjectURL(lastUrl);
                     lastUrl = url;
+                    frames += 1;
+                    cell.dataset.osrFrames = String(frames);
                   }
                 }
-              } catch {
-                /* abort/서버 종료 — teardown 경로가 정리한다 */
+                cell.dataset.osrStream = "server-closed";
+              } catch (e) {
+                cell.dataset.osrStream = `error:${e instanceof Error ? e.name + ":" + e.message : String(e)}`;
+                const retriable =
+                  !disposed && entry.domFrame === img && !ctl.signal.aborted && attempt < 6 &&
+                  cell.dataset.osrStream !== "server-closed";
+                if (retriable) setTimeout(() => void run(attempt + 1), 250 * attempt);
               }
-            })();
+            };
+            void run(1);
           });
         }
         const h = await engine();
