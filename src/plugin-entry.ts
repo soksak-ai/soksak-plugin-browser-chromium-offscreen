@@ -741,6 +741,7 @@ export function activate(ctx: PluginContext): void {
             // 성공 후 파싱 루프는 재시도 대상이 아니다(서버 FIN = 종료 상태로 기록).
             const run = async (attempt: number): Promise<void> => {
               cell.dataset.osrAttempt = String(attempt);
+              let gotFrame = false;
               try {
                 const res = await fetch(`http://127.0.0.1:${port}/s/${id}`, { signal: ctl.signal });
                 const reader = res.body?.getReader();
@@ -771,6 +772,7 @@ export function activate(ctx: PluginContext): void {
                     if (buf.length < he + 4 + len) break;
                     const jpeg = buf.slice(he + 4, he + 4 + len);
                     buf = buf.slice(he + 4 + len);
+                    if (!/image\/jpeg/i.test(head)) continue; // 하트비트 파트 — 연결 유지 전용
                     if (disposed || entry.domFrame !== img) {
                       ctl.abort(); // 낡은 mount 의 잔류 연결 금지
                       return;
@@ -780,16 +782,18 @@ export function activate(ctx: PluginContext): void {
                     if (lastUrl) URL.revokeObjectURL(lastUrl);
                     lastUrl = url;
                     frames += 1;
+                    gotFrame = true;
                     cell.dataset.osrFrames = String(frames);
                   }
                 }
                 cell.dataset.osrStream = "server-closed";
               } catch (e) {
                 cell.dataset.osrStream = `error:${e instanceof Error ? e.name + ":" + e.message : String(e)}`;
+                const next = gotFrame ? 1 : attempt + 1;
                 const retriable =
-                  !disposed && entry.domFrame === img && !ctl.signal.aborted && attempt < 6 &&
+                  !disposed && entry.domFrame === img && !ctl.signal.aborted && next <= 6 &&
                   cell.dataset.osrStream !== "server-closed";
-                if (retriable) setTimeout(() => void run(attempt + 1), 250 * attempt);
+                if (retriable) setTimeout(() => void run(next), 250 * next);
               }
             };
             void run(1);
