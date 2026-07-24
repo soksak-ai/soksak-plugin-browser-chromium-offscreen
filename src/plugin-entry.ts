@@ -88,6 +88,8 @@ function measureRect(el: HTMLElement): { x: number; y: number; w: number; h: num
 interface ViewEntry {
   viewId: string;
   surfaceId: number | null;
+  domFrame?: HTMLImageElement; // DOM 프레젠터(스파이크) — 프레임 <img>, teardown 시 회수
+  domFrameStop?: () => void; // DOM 프레젠터 스트림 중단(fetch abort + objectURL 회수)
   getUrl: () => string;
   navigate: (url: string) => void;
   teardown: () => void; // 서피스 close + 옵서버 해제 — 재mount/unmount 에서 멱등 호출
@@ -542,6 +544,14 @@ export function activate(ctx: PluginContext): void {
         if (activeViewId === viewId) activeViewId = null;
         stopInput?.();
         stopFollow?.();
+        // DOM 프레젠터 회수(스파이크) — 스트림 off + img 제거(연결 FIN 이 서버 쪽 구독도 정리).
+        if (entry.domFrame) {
+          entry.domFrameStop?.();
+          entry.domFrameStop = undefined;
+          entry.domFrame.remove();
+          entry.domFrame = undefined;
+          if (surfaceId != null) void send({ type: "frame-stream", id: surfaceId, enable: false });
+        }
         if (surfaceId != null) {
           const id = surfaceId;
           // 즉시 숨김(탭은 닫힌 확정 상태 — 서피스가 화면에 남으면 안 된다) 후 close 는 디바운스:
@@ -625,9 +635,17 @@ export function activate(ctx: PluginContext): void {
         // 코어 표준 신호 두 개가 그 축을 소유한다: layout.reflow(커밋 후 재스냅) +
         // layout.resize-gesture(모션 위상 — tick 이 안정될 때까지 자체 연장돼 추종이 된다).
         const offReflow = app.events.on("layout.reflow", () => { lastKey = ""; arm(); });
+        // 코어 슬롯 동결(§4.6)의 표면 가림 릴레이 — 스탠드인이 선 동안만 서피스를 숨긴다
+        // (view.parked 와 동형). 해동의 hidden:false 는 엔진의 전면 재페인트 경로를 태워
+        // 착지 프레임이 신선하다.
+        const offVeil = app.events.on("view.veiled", (p) => {
+          const q = p as { viewId?: string; veiled?: boolean };
+          if (q.viewId !== viewId) return;
+          void send({ type: "hidden", id, hidden: !!q.veiled });
+        });
         const offMotion = app.events.on("layout.resize-gesture", () => { lastKey = ""; arm(); });
         arm();
-        return () => { offPark.dispose(); offReflow.dispose(); offMotion.dispose(); ro.disconnect(); io.disconnect(); window.removeEventListener("resize", arm); if (raf) cancelAnimationFrame(raf); };
+        return () => { offPark.dispose(); offReflow.dispose(); offMotion.dispose(); offVeil.dispose(); ro.disconnect(); io.disconnect(); window.removeEventListener("resize", arm); if (raf) cancelAnimationFrame(raf); };
       }
 
       // ── 재부착 후보 — 이전 인스턴스/이전 mount 가 이 viewId 로 만든 서피스(페이지 상태 보존).
@@ -690,6 +708,109 @@ export function activate(ctx: PluginContext): void {
         void send({ type: "popup-mode", asWindow: newWindowMode() });
         stopFollow = follow(id);
         stopInput = forwardInput(cell, (m) => void send({ ...m, id }));
+        // ── DOM 프레젠터(스파이크, 설정 domPresenter=true 일 때만) ──
+        // 엔진 프레임을 MJPEG <img> 로 슬롯 안에 세운다 — 브라우저 표면이 진짜 DOM 요소가
+        // 되어 이동·z·클립이 웹뷰 컴포지터 소유(두-컴포지터 이음새 범주의 구조적 제거 실험).
+        // 네이티브 레이어는 그대로 두되 img(불투명)가 홀을 덮어 시각적으로 대체된다.
+        // 판정(사용자 기준): 매끄럽지 않으면 실패 프리픽스 보존 후 폐기.
+        if (app.settings?.get("domPresenter") === true || String(app.settings?.get("domPresenter")) === "true") {
+          cell.dataset.osrStream = "requested";
+          void send({ type: "frame-stream", id, enable: true }).then((r) => {
+            const port = r && typeof (r as { port?: number }).port === "number" ? (r as { port: number }).port : 0;
+            if (!port || disposed || views.get(viewId) !== entry) {
+              cell.dataset.osrStream = !port ? "no-port" : "stale-mount";
+              return;
+            }
+            const img = document.createElement("img");
+            img.className = "osr-dom-frame";
+            img.style.cssText =
+              "position:absolute;inset:0;width:100%;height:100%;object-fit:fill;pointer-events:none;z-index:1;";
+            cell.appendChild(img);
+            entry.domFrame = img;
+            // WebKit 은 <img> 의 multipart/x-mixed-replace 를 디코드하지 않는다(Blink 전용) —
+            // fetch 스트림에서 파트 경계를 직접 파싱해 파트마다 Blob objectURL 로 img 를
+            // 갈아끼운다. 연결 1개, 파트 도착 = 프레임 교체(latest-wins) — 폴링 아님.
+            const ctl = new AbortController();
+            let lastUrl = "";
+            entry.domFrameStop = () => {
+              ctl.abort();
+              if (lastUrl) URL.revokeObjectURL(lastUrl);
+              lastUrl = "";
+            };
+            const findSeq = (buf: Uint8Array, seq: number[], from: number): number => {
+              outer: for (let i = from; i + seq.length <= buf.length; i++) {
+                for (let j = 0; j < seq.length; j++) if (buf[i + j] !== seq[j]) continue outer;
+                return i;
+              }
+              return -1;
+            };
+            // 연결 수립은 시간-유계 재시도(마운트 후 90초 지평, 2초 간격) — 부팅 직후 웹뷰
+            // 네트워크 프로세스가 loopback fetch 를 수 초간 거절하는 실측(Load failed) 견고화.
+            // 지평 소진 = 종료(무한 재시도 아님). 성공 후 파싱 루프는 재시도 대상이 아니다.
+            const RETRY_HORIZON_MS = 90_000;
+            const t0 = Date.now();
+            const run = async (attempt: number): Promise<void> => {
+              cell.dataset.osrAttempt = String(attempt);
+              let gotFrame = false;
+              try {
+                const res = await fetch(`http://127.0.0.1:${port}/s/${id}`, { signal: ctl.signal });
+                const reader = res.body?.getReader();
+                if (!reader) {
+                  cell.dataset.osrStream = "no-body";
+                  return;
+                }
+                cell.dataset.osrStream = "open";
+                let frames = 0;
+                let buf = new Uint8Array(0);
+                for (;;) {
+                  const { done, value } = await reader.read();
+                  if (done) break;
+                  const merged = new Uint8Array(buf.length + value.length);
+                  merged.set(buf);
+                  merged.set(value, buf.length);
+                  buf = merged;
+                  for (;;) {
+                    const he = findSeq(buf, [13, 10, 13, 10], 0);
+                    if (he < 0) break;
+                    const head = new TextDecoder().decode(buf.subarray(0, he));
+                    const m = /Content-Length:\s*(\d+)/i.exec(head);
+                    if (!m) {
+                      buf = buf.slice(he + 4);
+                      continue;
+                    }
+                    const len = Number(m[1]);
+                    if (buf.length < he + 4 + len) break;
+                    const jpeg = buf.slice(he + 4, he + 4 + len);
+                    buf = buf.slice(he + 4 + len);
+                    if (!/image\/jpeg/i.test(head)) continue; // 하트비트 파트 — 연결 유지 전용
+                    if (disposed || entry.domFrame !== img) {
+                      ctl.abort(); // 낡은 mount 의 잔류 연결 금지
+                      return;
+                    }
+                    const url = URL.createObjectURL(new Blob([jpeg], { type: "image/jpeg" }));
+                    img.src = url;
+                    if (lastUrl) URL.revokeObjectURL(lastUrl);
+                    lastUrl = url;
+                    frames += 1;
+                    gotFrame = true;
+                    cell.dataset.osrFrames = String(frames);
+                  }
+                }
+                cell.dataset.osrStream = "server-closed";
+              } catch (e) {
+                cell.dataset.osrStream = `error:${e instanceof Error ? e.name + ":" + e.message : String(e)}`;
+                const next = gotFrame ? 1 : attempt + 1;
+                const retriable =
+                  !disposed && entry.domFrame === img && !ctl.signal.aborted &&
+                  Date.now() - t0 < RETRY_HORIZON_MS &&
+                  cell.dataset.osrStream !== "server-closed";
+                if (retriable) setTimeout(() => void run(next), gotFrame ? 250 : 2000);
+                else cell.dataset.osrStream += ";gave-up";
+              }
+            };
+            void run(1);
+          });
+        }
         const h = await engine();
         h.on("nav", (p) => { if (p.id === id && typeof p.url === "string") setUrlBar(p.url); });
         h.on("title", (p) => { if (p.id === id && typeof p.title === "string") vctx.setTitle?.(p.title); });

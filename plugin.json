@@ -73,6 +73,19 @@
         "ko": "target=_blank / window.open 링크를 새 탭(인앱 뷰)으로 열지 새 창(독립 OS 창)으로 열지.",
         "en": "Open target=_blank / window.open links as a new tab (in-app view) or an independent OS window."
       }
+    },
+    {
+      "key": "domPresenter",
+      "type": "boolean",
+      "default": false,
+      "title": {
+        "ko": "DOM 프레젠터(실험)",
+        "en": "DOM presenter (experimental)"
+      },
+      "description": {
+        "ko": "엔진 프레임을 MJPEG로 DOM <img>에 합성한다 — 표면이 진짜 DOM 요소가 되어 이동·z가 웹뷰 컴포지터 소유가 된다. 실험: 매끄럽지 않으면 폐기.",
+        "en": "Composites engine frames into a DOM <img> via MJPEG — the surface becomes a real DOM element owned by the web compositor. Experiment: discarded if not smooth."
+      }
     }
   ],
   "contributes": {

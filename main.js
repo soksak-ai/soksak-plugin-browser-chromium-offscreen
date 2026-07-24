@@ -1,4 +1,4 @@
-// ../../kits/soksak-kit-browser-common/src/url.ts
+// ../../../.soksak-dev/kits/soksak-kit-browser-common/src/url.ts
 function normalizeUrl(raw) {
   const s = raw.trim();
   if (!s) return "about:blank";
@@ -7,7 +7,7 @@ function normalizeUrl(raw) {
   return `https://www.google.com/search?q=${encodeURIComponent(s)}`;
 }
 
-// ../../kits/soksak-kit-browser-common/src/nav-state.ts
+// ../../../.soksak-dev/kits/soksak-kit-browser-common/src/nav-state.ts
 var initialNavState = { loading: false, canBack: false, canForward: false };
 function renderNavState(s) {
   return {
@@ -20,7 +20,7 @@ function renderNavState(s) {
   };
 }
 
-// ../../kits/soksak-kit-browser-common/src/lifecycle.ts
+// ../../../.soksak-dev/kits/soksak-kit-browser-common/src/lifecycle.ts
 function createLifecycle(opts) {
   const LEDGER = `${opts.storagePrefix}-created`;
   const BYVIEW = `${opts.storagePrefix}-byview`;
@@ -112,7 +112,7 @@ function createLifecycle(opts) {
   };
 }
 
-// ../../kits/soksak-kit-browser-common/src/input-forward.ts
+// ../../../.soksak-dev/kits/soksak-kit-browser-common/src/input-forward.ts
 function modsOf(e) {
   return (e.shiftKey ? 1 : 0) | (e.ctrlKey ? 2 : 0) | (e.altKey ? 4 : 0) | (e.metaKey ? 8 : 0);
 }
@@ -266,7 +266,7 @@ function forwardInput(container, send) {
   };
 }
 
-// ../../kits/soksak-kit-browser-common/src/toolbar.ts
+// ../../../.soksak-dev/kits/soksak-kit-browser-common/src/toolbar.ts
 function btn(node, label, title) {
   const b = document.createElement("button");
   b.type = "button";
@@ -353,7 +353,7 @@ function createBrowserToolbar(container, cb) {
   };
 }
 
-// ../../kits/soksak-kit-browser-common/src/dom-snippets.ts
+// ../../../.soksak-dev/kits/soksak-kit-browser-common/src/dom-snippets.ts
 var jsStr = (s) => JSON.stringify(s);
 function domTextBody(selector, maxLength = 2e4) {
   return selector ? `const el = document.querySelector(${jsStr(selector)}); return el ? el.innerText.slice(0, ${maxLength}) : null;` : `return document.body.innerText.slice(0, ${maxLength});`;
@@ -836,6 +836,11 @@ function activate(ctx) {
         if (activeViewId === viewId) activeViewId = null;
         stopInput?.();
         stopFollow?.();
+        if (entry.domFrame) {
+          entry.domFrame.remove();
+          entry.domFrame = void 0;
+          if (surfaceId != null) void send({ type: "frame-stream", id: surfaceId, enable: false });
+        }
         if (surfaceId != null) {
           const id = surfaceId;
           void send({ type: "hidden", id, hidden: true });
@@ -1001,6 +1006,18 @@ function activate(ctx) {
         void send({ type: "popup-mode", asWindow: newWindowMode() });
         stopFollow = follow(id);
         stopInput = forwardInput(cell, (m) => void send({ ...m, id }));
+        if (app.settings?.get("domPresenter") === true || String(app.settings?.get("domPresenter")) === "true") {
+          void send({ type: "frame-stream", id, enable: true }).then((r) => {
+            const port = r && typeof r.port === "number" ? r.port : 0;
+            if (!port || disposed || views.get(viewId) !== entry) return;
+            const img = document.createElement("img");
+            img.className = "osr-dom-frame";
+            img.style.cssText = "position:absolute;inset:0;width:100%;height:100%;object-fit:fill;pointer-events:none;z-index:1;";
+            img.src = `http://127.0.0.1:${port}/s/${id}`;
+            cell.appendChild(img);
+            entry.domFrame = img;
+          });
+        }
         const h = await engine();
         h.on("nav", (p) => {
           if (p.id === id && typeof p.url === "string") setUrlBar(p.url);
